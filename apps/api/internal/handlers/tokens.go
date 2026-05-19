@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 
 	"github.com/charlunn/knowlib/api/internal/auth"
@@ -76,7 +75,9 @@ func RevokeToken(d *Deps) http.HandlerFunc {
 		}
 		id := chi.URLParam(r, "id")
 		if err := d.Store.RevokeToken(id); err != nil {
-			if errors.Is(err, errors.New("token not found")) {
+			// store.RevokeToken returns a sentinel-ish "token not found" error;
+			// match by string since the package doesn't export it as a typed value.
+			if err.Error() == "token not found" {
 				writeError(w, http.StatusNotFound, "not found")
 				return
 			}

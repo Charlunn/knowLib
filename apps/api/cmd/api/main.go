@@ -61,6 +61,7 @@ func main() {
 
 	// Public: login is rate-limited but unauthenticated.
 	r.Post("/api/auth/login", handlers.Login(deps))
+	r.Post("/api/auth/logout", handlers.Logout(deps))
 
 	// Authenticated routes — accept session JWT (cookie or Bearer) or API token.
 	r.Group(func(g chi.Router) {
@@ -75,6 +76,7 @@ func main() {
 
 		g.Get("/api/settings", handlers.GetSettings(deps))
 		g.Put("/api/settings", handlers.PutSettings(deps))
+		g.Post("/api/settings/test-llm", handlers.TestLLM(deps))
 
 		g.Get("/api/tokens", handlers.ListTokens(deps))
 		g.Post("/api/tokens", handlers.CreateToken(deps))

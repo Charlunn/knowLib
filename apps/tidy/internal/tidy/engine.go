@@ -11,6 +11,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charlunn/knowlib/tidy/internal/atlas"
@@ -43,6 +44,20 @@ type Engine struct {
 	NowFunc func() time.Time
 }
 
+// Overrides carry per-request settings that override env-loaded config.
+// Sent by the api service so user changes via /api/settings take effect
+// without restarting the tidy worker.
+type Overrides struct {
+	LLMBaseURL   string `json:"llm_base_url,omitempty"`
+	LLMAPIKey    string `json:"llm_api_key,omitempty"`
+	LLMModel     string `json:"llm_model,omitempty"`
+	EmbedBaseURL string `json:"embed_base_url,omitempty"`
+	EmbedModel   string `json:"embed_model,omitempty"`
+	TopK         int    `json:"top_k,omitempty"`
+	MaxTokens    int    `json:"max_tokens,omitempty"`
+	PromptInline string `json:"prompt_inline,omitempty"`
+}
+
 func NewEngine(cfg *config.Config) *Engine {
 	return &Engine{
 		Cfg:     cfg,
@@ -53,8 +68,71 @@ func NewEngine(cfg *config.Config) *Engine {
 	}
 }
 
+// runtimeContext bundles the values that may be overridden per-request.
+type runtimeContext struct {
+	llm        *llm.Client
+	retr       *retrieval.Client
+	model      string
+	topK       int
+	maxTokens  int
+	promptText string
+}
+
+func (e *Engine) buildRuntimeContext(o *Overrides) *runtimeContext {
+	rc := &runtimeContext{
+		llm:       e.LLM,
+		retr:      e.Retr,
+		model:     e.Cfg.OpenAIModel,
+		topK:      e.Cfg.TopK,
+		maxTokens: e.Cfg.MaxTokens,
+	}
+	if o == nil {
+		return rc
+	}
+	// Only construct new clients when the override actually differs from defaults.
+	if (o.LLMBaseURL != "" && o.LLMBaseURL != e.Cfg.OpenAIBaseURL) ||
+		(o.LLMAPIKey != "" && o.LLMAPIKey != e.Cfg.OpenAIAPIKey) ||
+		(o.LLMModel != "" && o.LLMModel != e.Cfg.OpenAIModel) {
+		baseURL := pick(o.LLMBaseURL, e.Cfg.OpenAIBaseURL)
+		apiKey := pick(o.LLMAPIKey, e.Cfg.OpenAIAPIKey)
+		model := pick(o.LLMModel, e.Cfg.OpenAIModel)
+		rc.llm = llm.New(baseURL, apiKey, model)
+		rc.model = model
+	} else if o.LLMModel != "" {
+		rc.model = o.LLMModel
+	}
+	if (o.EmbedBaseURL != "" && o.EmbedBaseURL != e.Cfg.EmbedBaseURL) ||
+		(o.EmbedModel != "" && o.EmbedModel != e.Cfg.EmbedModel) {
+		rc.retr = retrieval.New(
+			pick(o.EmbedBaseURL, e.Cfg.EmbedBaseURL),
+			pick(o.EmbedModel, e.Cfg.EmbedModel),
+			e.Cfg.QdrantURL,
+			e.Cfg.QdrantCollection,
+		)
+	}
+	if o.TopK > 0 {
+		rc.topK = o.TopK
+	}
+	if o.MaxTokens > 0 {
+		rc.maxTokens = o.MaxTokens
+	}
+	if o.PromptInline != "" {
+		rc.promptText = o.PromptInline
+	}
+	return rc
+}
+
+func pick(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
 // Run executes a tidy job. If req.All is true, runs over every inbox/ file.
-func (e *Engine) Run(ctx context.Context, paths []string, all bool) (*Result, error) {
+// Items are processed with bounded concurrency so a "tidy all" over a large
+// inbox doesn't take wall-clock time proportional to file count × LLM latency.
+func (e *Engine) Run(ctx context.Context, paths []string, all bool, overrides *Overrides) (*Result, error) {
 	if all {
 		got, err := e.FS.ListInbox()
 		if err != nil {
@@ -62,17 +140,46 @@ func (e *Engine) Run(ctx context.Context, paths []string, all bool) (*Result, er
 		}
 		paths = got
 	}
+	rc := e.buildRuntimeContext(overrides)
 	job := &Result{JobID: fmt.Sprintf("tidy-%d", e.NowFunc().Unix())}
-	for _, p := range paths {
-		item := e.runOne(ctx, p)
-		job.Items = append(job.Items, item)
+
+	// Bounded concurrency. The LLM is the bottleneck; 3 in-flight requests is
+	// a safe default that respects most provider rate limits without leaving
+	// the user staring at a serial queue. Single-item jobs skip the goroutines
+	// entirely so we don't pay the orchestration cost for the common case.
+	if len(paths) <= 1 {
+		for _, p := range paths {
+			job.Items = append(job.Items, e.runOne(ctx, p, rc))
+		}
+		return job, nil
 	}
+
+	const maxConcurrent = 3
+	sem := make(chan struct{}, maxConcurrent)
+	results := make([]Item, len(paths))
+	var wg sync.WaitGroup
+	for i, p := range paths {
+		wg.Add(1)
+		go func(idx int, src string) {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				results[idx] = Item{SourcePath: src, Status: "failed", Reason: "cancelled"}
+				return
+			}
+			results[idx] = e.runOne(ctx, src, rc)
+		}(i, p)
+	}
+	wg.Wait()
+	job.Items = results
 	return job, nil
 }
 
 // runOne handles a single inbox file. Failure of the LLM or safediff causes
 // us to leave the inbox file in place — the user can retry later.
-func (e *Engine) runOne(ctx context.Context, srcPath string) Item {
+func (e *Engine) runOne(ctx context.Context, srcPath string, rc *runtimeContext) Item {
 	out := Item{SourcePath: srcPath, Status: "failed"}
 
 	raw, err := e.FS.Read(srcPath)
@@ -83,11 +190,11 @@ func (e *Engine) runOne(ctx context.Context, srcPath string) Item {
 	srcFM, body := fmatter.Parse(string(raw))
 
 	// 1. retrieve top-K related notes (best-effort: empty list on failure)
-	hits, _ := e.Retr.Search(ctx, body, e.Cfg.TopK)
+	hits, _ := rc.retr.Search(ctx, body, rc.topK)
 	relatedJSON, _ := json.MarshalIndent(simplifyHits(hits), "", "  ")
 
-	// 2. load prompt template (vault file is authoritative; falls back to bundled default)
-	prompt, err := e.loadPrompt()
+	// 2. load prompt: inline override > vault file > bundled default
+	prompt, err := e.loadPrompt(rc.promptText)
 	if err != nil {
 		out.Reason = "prompt: " + err.Error()
 		return out
@@ -99,7 +206,7 @@ func (e *Engine) runOne(ctx context.Context, srcPath string) Item {
 		body,
 		string(relatedJSON),
 	)
-	rawResp, err := e.LLM.Chat(ctx, prompt, user, e.Cfg.MaxTokens)
+	rawResp, err := rc.llm.Chat(ctx, prompt, user, rc.maxTokens)
 	if err != nil {
 		out.Reason = "llm: " + err.Error()
 		return out
@@ -138,7 +245,7 @@ func (e *Engine) runOne(ctx context.Context, srcPath string) Item {
 		"postreq":     parsed.Postreq,
 		"created":     defaultStr(srcFM["captured_at"], now),
 		"tidied":      now,
-		"tidied_by":   e.Cfg.OpenAIModel,
+		"tidied_by":   rc.model,
 		"source_path": srcPath,
 	}
 	rendered := fmatter.Render(keys, fm, bodyToWrite)
@@ -158,7 +265,7 @@ func (e *Engine) runOne(ctx context.Context, srcPath string) Item {
 	// 9. log
 	_ = e.FS.AppendLog("tidy.log", fmt.Sprintf(
 		"%s -> %s (model=%s, body_accepted=%t)",
-		srcPath, target, e.Cfg.OpenAIModel, bodyAccepted,
+		srcPath, target, rc.model, bodyAccepted,
 	))
 
 	out.TargetPath = target
@@ -171,7 +278,10 @@ func (e *Engine) runOne(ctx context.Context, srcPath string) Item {
 	return out
 }
 
-func (e *Engine) loadPrompt() (string, error) {
+func (e *Engine) loadPrompt(inline string) (string, error) {
+	if inline != "" {
+		return inline, nil
+	}
 	if e.Cfg.PromptPath != "" {
 		b, err := os.ReadFile(e.Cfg.PromptPath)
 		if err == nil {

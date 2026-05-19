@@ -11,6 +11,6 @@
 - `claude-skill/SKILL.md` + 调用脚本 — Claude Code skill
 - `INSTALL.md` — 三种用法的 30 秒上手
 
-## 待实现
+## 实现说明
 
-模板文件;运行时 api 服务把模板里的 `{{SERVER_URL}}` 和 `{{API_TOKEN}}` 替换成真实值再 zip 出去。
+模板文件用 `{{SERVER_URL}}` 和 `{{API_TOKEN}}` 占位符。运行时 api 服务在打包 zip 前把模板里的占位符替换成真实值，每次下载会生成新的长效 token。

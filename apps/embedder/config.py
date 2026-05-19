@@ -44,7 +44,12 @@ class Settings(BaseSettings):
     # so we expect a few connection refusals before Qdrant is ready.
     qdrant_startup_timeout_s: int = 60
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    # Maximum concurrent model.encode() calls. bge-m3 inference is CPU-heavy and
+# not thread-safe in the obvious sense, so we serialise by default. Bump this
+# only on multi-GPU rigs.
+embed_concurrency: int = 1
+
+model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
 # Map user-facing aliases to actual HuggingFace model ids. Users typing "bge-m3"

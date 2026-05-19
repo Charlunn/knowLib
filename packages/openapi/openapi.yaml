@@ -110,6 +110,19 @@ paths:
         "401": { description: invalid totp }
         "429": { description: rate limited }
 
+  /api/auth/logout:
+    post:
+      summary: Clear the session cookie.
+      responses:
+        "200":
+          description: Logged out.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+
   /api/capture:
     post:
       requestBody:
@@ -165,3 +178,24 @@ paths:
         content: { application/json: { schema: { $ref: "#/components/schemas/Settings" } } }
       responses:
         "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Settings" } } } }
+
+  /api/settings/test-llm:
+    post:
+      summary: Send a single chat-completion request using the current LLM settings to verify connectivity.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                prompt: { type: string, description: "Optional override prompt; defaults to 'say ok'." }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  output: { type: string }
+        "502": { description: upstream LLM error }

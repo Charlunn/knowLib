@@ -1,8 +1,10 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
+import * as React from 'react';
 import { cn } from '@/lib/utils';
+import { api } from '@/lib/api';
 
 const items: { href: string; label: string }[] = [
   { href: '/capture', label: '快捕' },
@@ -13,15 +15,32 @@ const items: { href: string; label: string }[] = [
 
 export function Nav(): JSX.Element {
   const pathname = usePathname();
+  const router = useRouter();
+  const [loggingOut, setLoggingOut] = React.useState(false);
+
   // Hide chrome on /capture for that anti-friction notepad feel.
   if (pathname === '/capture') return <></>;
+
+  const onLogout = async () => {
+    if (loggingOut) return;
+    setLoggingOut(true);
+    try {
+      await api.logout();
+    } catch {
+      // Best-effort: even if the API call fails, the cookie is still server-side.
+      // Force the redirect either way.
+    }
+    router.replace('/login');
+    router.refresh();
+  };
+
   return (
     <nav className="border-b">
       <div className="container flex h-12 items-center gap-4 text-sm">
         <Link href="/capture" className="font-semibold tracking-tight">
           knowLib
         </Link>
-        <div className="flex items-center gap-3 text-muted-foreground">
+        <div className="flex flex-1 items-center gap-3 text-muted-foreground">
           {items.map((it) => {
             const active = pathname?.startsWith(it.href);
             return (
@@ -35,6 +54,14 @@ export function Nav(): JSX.Element {
             );
           })}
         </div>
+        <button
+          onClick={onLogout}
+          disabled={loggingOut}
+          className="px-2 py-1 rounded-md text-xs text-muted-foreground hover:text-foreground disabled:opacity-50"
+          aria-label="退出登录"
+        >
+          {loggingOut ? '退出中…' : '退出'}
+        </button>
       </div>
     </nav>
   );

@@ -81,6 +81,12 @@ class QStore:
             field_name="category",
             field_schema=qm.PayloadSchemaType.KEYWORD,
         )
+        # chunk_index is used by the orphan-cleanup range filter in upsert_file.
+        self._client.create_payload_index(
+            collection_name=self._collection,
+            field_name="chunk_index",
+            field_schema=qm.PayloadSchemaType.INTEGER,
+        )
 
     def get_file_sha(self, path: str) -> str | None:
         """Return the content_sha256 stored for the FIRST chunk of `path`, or None."""
@@ -94,6 +100,34 @@ class QStore:
         if not res:
             return None
         return res[0].payload.get("content_sha256")
+
+    def all_file_shas(self) -> dict[str, str]:
+        """Return {path: content_sha256} for every indexed file in one pass.
+
+        Pays one full scroll over the collection (paginated) and returns
+        dedup'd path → sha. Used by reconcile() to skip the N+1 problem of
+        calling get_file_sha for every file on disk.
+        """
+        out: dict[str, str] = {}
+        offset = None
+        while True:
+            res, offset = self._client.scroll(
+                collection_name=self._collection,
+                limit=512,
+                offset=offset,
+                with_payload=["path", "content_sha256"],
+                with_vectors=False,
+            )
+            for p in res:
+                if not p.payload:
+                    continue
+                path = p.payload.get("path")
+                sha = p.payload.get("content_sha256")
+                if path and sha and path not in out:
+                    out[path] = sha
+            if offset is None:
+                break
+        return out
 
     def all_indexed_paths(self) -> set[str]:
         """Enumerate every path currently in the collection (for reconcile)."""
@@ -135,10 +169,8 @@ class QStore:
     ) -> None:
         assert len(chunks) == len(vectors) == len(chunk_payloads)
 
-        # Wipe any existing points for this path first so chunk-count shrinks
-        # don't leave orphans, then upsert. Two roundtrips, but safe and simple.
-        self.delete_file(path)
-
+        # Step 1: upsert the new points first. Their IDs are deterministic
+        # (UUIDv5 of path + chunk_index), so re-upsert just overwrites.
         points = []
         for i, (text, vec, extra) in enumerate(zip(chunks, vectors, chunk_payloads)):
             payload = {**common_payload, **extra, "content": text, "chunk_index": i, "path": path}
@@ -150,6 +182,27 @@ class QStore:
                 )
             )
         self._client.upsert(collection_name=self._collection, points=points, wait=True)
+
+        # Step 2: delete any orphan chunks left from a previous version of this
+        # file that had MORE chunks than the current version. We filter by
+        # path + chunk_index >= len(chunks) so live chunks are never touched
+        # even if the embedder crashes between step 1 and step 2.
+        if len(chunks) > 0:
+            self._client.delete(
+                collection_name=self._collection,
+                points_selector=qm.FilterSelector(
+                    filter=qm.Filter(
+                        must=[
+                            qm.FieldCondition(key="path", match=qm.MatchValue(value=path)),
+                            qm.FieldCondition(
+                                key="chunk_index",
+                                range=qm.Range(gte=len(chunks)),
+                            ),
+                        ]
+                    )
+                ),
+                wait=False,
+            )
 
     def search(self, vector: list[float], k: int = 10, category_prefix: str | None = None) -> list[dict[str, Any]]:
         flt = None

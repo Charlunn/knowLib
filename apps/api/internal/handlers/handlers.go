@@ -326,6 +326,7 @@ func Search(d *Deps) http.HandlerFunc {
 // === tidy =====================================================================
 
 func Tidy(d *Deps) http.HandlerFunc {
+	defaults := buildDefaultSettings(d.Cfg)
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in httpx.TidyRequest
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
@@ -338,6 +339,41 @@ func Tidy(d *Deps) http.HandlerFunc {
 				writeError(w, http.StatusBadRequest, "bad path: "+p)
 				return
 			}
+		}
+		// Inject current settings as overrides so user changes from /api/settings
+		// take effect without restarting the tidy worker.
+		st, err := d.Store.GetSettings(defaults)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		// Caller-provided overrides win; otherwise we fill in from the bbolt store.
+		if in.Overrides == nil {
+			in.Overrides = &httpx.TidyOverrides{}
+		}
+		if in.Overrides.LLMBaseURL == "" {
+			in.Overrides.LLMBaseURL = st.LLMBaseURL
+		}
+		if in.Overrides.LLMAPIKey == "" {
+			in.Overrides.LLMAPIKey = st.LLMAPIKey
+		}
+		if in.Overrides.LLMModel == "" {
+			in.Overrides.LLMModel = st.LLMModel
+		}
+		if in.Overrides.EmbedBaseURL == "" {
+			in.Overrides.EmbedBaseURL = st.EmbedBaseURL
+		}
+		if in.Overrides.EmbedModel == "" {
+			in.Overrides.EmbedModel = st.EmbedModel
+		}
+		if in.Overrides.TopK == 0 {
+			in.Overrides.TopK = st.TidyTopK
+		}
+		if in.Overrides.MaxTokens == 0 {
+			in.Overrides.MaxTokens = st.TidyMaxTokens
+		}
+		if in.Overrides.PromptInline == "" {
+			in.Overrides.PromptInline = st.TidyPrompt
 		}
 		out, err := d.Tidy.Run(r.Context(), in)
 		if err != nil {
@@ -466,4 +502,112 @@ func max(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// === logout ===================================================================
+
+func Logout(_ *Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Session JWTs are stateless; logout is just clearing the cookie.
+		http.SetCookie(w, &http.Cookie{
+			Name:     "klib_session",
+			Value:    "",
+			Path:     "/",
+			MaxAge:   -1,
+			HttpOnly: true,
+			Secure:   true,
+			SameSite: http.SameSiteLaxMode,
+		})
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
+}
+
+// === test-llm =================================================================
+
+func TestLLM(d *Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Prompt string `json:"prompt"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "bad json")
+			return
+		}
+		if strings.TrimSpace(in.Prompt) == "" {
+			in.Prompt = "say ok"
+		}
+		// Use current settings so the test reflects whatever LLM the user has configured.
+		defaults := buildDefaultSettings(d.Cfg)
+		st, err := d.Store.GetSettings(defaults)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		// Build a one-shot HTTP client to call the LLM.
+		type msg struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		}
+		type chatReq struct {
+			Model     string  `json:"model"`
+			Messages  []msg   `json:"messages"`
+			MaxTokens int     `json:"max_tokens"`
+			Temp      float32 `json:"temperature"`
+		}
+		type choice struct {
+			Message msg `json:"message"`
+		}
+		type chatResp struct {
+			Choices []choice `json:"choices"`
+			Error   struct {
+				Message string `json:"message"`
+			} `json:"error,omitempty"`
+		}
+
+		reqBody, _ := json.Marshal(chatReq{
+			Model:     st.LLMModel,
+			Messages:  []msg{{Role: "user", Content: in.Prompt}},
+			MaxTokens: 256,
+			Temp:      0,
+		})
+		apiKey := st.LLMAPIKey
+		if apiKey == "" {
+			apiKey = d.Cfg.OpenAIAPIKey
+		}
+		baseURL := strings.TrimRight(st.LLMBaseURL, "/")
+		if baseURL == "" {
+			baseURL = strings.TrimRight(d.Cfg.OpenAIBaseURL, "/")
+		}
+
+		hc := &http.Client{Timeout: 30 * time.Second}
+		req, err := http.NewRequestWithContext(r.Context(), "POST", baseURL+"/chat/completions",
+			strings.NewReader(string(reqBody)))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+
+		resp, err := hc.Do(req)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "llm: "+err.Error())
+			return
+		}
+		defer resp.Body.Close()
+		var cr chatResp
+		if err := json.NewDecoder(resp.Body).Decode(&cr); err != nil {
+			writeError(w, http.StatusBadGateway, "llm parse: "+err.Error())
+			return
+		}
+		if cr.Error.Message != "" {
+			writeError(w, http.StatusBadGateway, "llm: "+cr.Error.Message)
+			return
+		}
+		if len(cr.Choices) == 0 {
+			writeError(w, http.StatusBadGateway, "llm: empty response")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"output": cr.Choices[0].Message.Content})
+	}
 }

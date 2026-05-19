@@ -101,6 +101,17 @@ if [[ ! -f data/vault/.knowlib/prompts/tidy.md ]]; then
   echo "  installed default tidy prompt"
 fi
 
+# Write a placeholder initial-token file that will be populated after first api startup.
+# The api creates real tokens via /api/tokens; this file is just a reminder.
+if [[ ! -f data/api-state/initial-token.txt ]]; then
+  cat > data/api-state/initial-token.txt <<'TOKENEOF'
+# Initial API token will be available after first login via the web UI.
+# Go to https://<DOMAIN>/settings > API Tokens > Create Token
+# Alternatively use the REST API after logging in with your TOTP code.
+TOKENEOF
+  echo "  created data/api-state/initial-token.txt (placeholder)"
+fi
+
 # ensure ownership for non-root container users (best-effort, ignore on Windows)
 chmod -R 755 data/vault 2>/dev/null || true
 

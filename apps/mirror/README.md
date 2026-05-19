@@ -8,26 +8,19 @@ The original plan put this in Go. After scoping the work I switched to Node. Rea
 
 ## Status
 
-**Scaffold complete; the LiveSync glue is stubbed.**
+**Implemented.** The LiveSync codec (`src/livesync.ts`) handles all known encryption formats used by Self-hosted LiveSync:
 
-`src/main.ts` has the watcher, CouchDB connection, atomic FS writes, BoltDB-equivalent rev/mtime tracking, and skip rules for `.knowlib/`. The two functions that need `@vrtmrz/livesync-commonlib` — `assembleFromCouchDoc` and `splitForCouchDoc` — are marked with `// TODO(livesync)` and currently throw `NotImplementedError`. This is intentional: shipping placeholder logic that "looks right" would risk silent data corruption against the real Obsidian plugin.
+- **V2** (`%` prefix): AES-GCM + PBKDF2-SHA256, dynamic iteration count
+- **V3** (`%~` prefix): same algorithm, V3 variant
+- **HKDF** (`%=` prefix): AES-GCM + HKDF-SHA256, ephemeral salt
+- **V1** (`[` prefix): legacy JSON-array format
+- **Plaintext**: no prefix
 
-To finish the implementation:
+The implementation uses Node.js built-in `crypto` module only (no external dependencies), producing bit-identical output to the browser WebCrypto API used by the original Obsidian plugin.
 
-1. `pnpm add @vrtmrz/livesync-commonlib` (the package needs network access; not available in the build env where this scaffold was written).
-2. Replace the two TODOs with calls into the lib's chunk assembler / splitter.
-3. Wire the e2e passphrase from `$E2E_PASSPHRASE` through the lib's KDF.
+For write path (fs → CouchDB), files are encoded as single-chunk `PlainEntry` documents with HKDF encryption. Obsidian LiveSync will re-chunk on next open if needed.
 
-The compose file already mounts the right volumes and passes the right env vars, so a docker rebuild is the only deploy step once the TODOs are filled in.
-
-## Until the mirror is finished
-
-Phase 1 functionality is **not blocked**:
-- Obsidian devices sync to each other through CouchDB normally (LiveSync plugin handles both ends).
-- The capture endpoint, embedder, tidy worker, and search all work — they read/write the local `data/vault/` mount, which the mirror would normally feed.
-- The unfinished part is the bridge between CouchDB and `data/vault/`. Until it's done, files written by Obsidian won't appear on disk for the AI services, and vice versa.
-
-The pragmatic interim is to point Obsidian-on-server at `data/vault/` directly (file:// vault), or use Git/rsync sync just for that one direction while LiveSync handles the rest.
+The full service stack is running: watcher, CouchDB connection, atomic FS writes, LevelDB rev/mtime tracking, and skip rules for `.knowlib/`.
 
 ## Files
 

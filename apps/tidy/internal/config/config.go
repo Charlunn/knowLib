@@ -2,7 +2,6 @@
 package config
 
 import (
-	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -69,8 +68,8 @@ func Load() (*Config, error) {
 		MaxTokens:        envInt("TIDY_MAX_TOKENS", 4096),
 	}
 	c.PromptPath = c.VaultPath + "/" + c.KnowlibDir + "/prompts/tidy.md"
-	if c.OpenAIAPIKey == "" {
-		return nil, fmt.Errorf("OPENAI_API_KEY is required")
-	}
+	// OPENAI_API_KEY is no longer required at startup — it can be supplied
+	// per-request as an override (e.g. when the user changes settings via the
+	// Web UI). The api service is responsible for forwarding the current key.
 	return c, nil
 }

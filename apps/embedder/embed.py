@@ -6,6 +6,8 @@ Why a wrapper:
   - Normalizes embeddings (L2) so Qdrant cosine search behaves like dot product.
   - Returns the OpenAI-compatible payload shape so other services can call us
     via their existing OpenAI client (no separate code path for "internal" embeds).
+  - Serialises encode() calls behind a thread lock so concurrent requests don't
+    trample sentence-transformers' internal state.
 """
 
 from __future__ import annotations
@@ -23,7 +25,11 @@ class EmbedModel:
     def __init__(self, name: str | None = None):
         self._name = name or settings.embed_model
         self._model: SentenceTransformer | None = None
-        self._lock = threading.Lock()
+        self._load_lock = threading.Lock()
+        # Bounded semaphore protects encode() against unbounded concurrent
+        # callers. With sentence-transformers + torch, two threads racing into
+        # the same model produce nondeterministic output and OOMs.
+        self._encode_sem = threading.BoundedSemaphore(max(1, settings.embed_concurrency))
 
     @property
     def name(self) -> str:
@@ -33,7 +39,7 @@ class EmbedModel:
         # Double-checked locking: cheap fast path once warm.
         if self._model is not None:
             return self._model
-        with self._lock:
+        with self._load_lock:
             if self._model is None:
                 model_id = resolve_model_id(self._name)
                 # cache_folder picks up SENTENCE_TRANSFORMERS_HOME from env too,
@@ -48,14 +54,19 @@ class EmbedModel:
         if not texts:
             return []
         m = self._ensure_loaded()
-        # normalize_embeddings=True so we can use Cosine OR Dot in Qdrant
-        # interchangeably. Cosine on normalized vectors == dot product.
-        vecs = m.encode(
-            texts,
-            normalize_embeddings=True,
-            convert_to_numpy=True,
-            show_progress_bar=False,
-        )
+        # Serialise encode() — concurrent calls into one SentenceTransformer
+        # are unsafe in practice. asyncio.to_thread fans out callers across
+        # the threadpool; this semaphore brings them back to a controlled
+        # number of in-flight calls.
+        with self._encode_sem:
+            # normalize_embeddings=True so we can use Cosine OR Dot in Qdrant
+            # interchangeably. Cosine on normalized vectors == dot product.
+            vecs = m.encode(
+                texts,
+                normalize_embeddings=True,
+                convert_to_numpy=True,
+                show_progress_bar=False,
+            )
         return [v.tolist() for v in vecs]
 
     @property

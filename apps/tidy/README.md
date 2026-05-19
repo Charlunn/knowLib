@@ -13,10 +13,10 @@ AI 整理 worker。读 inbox 文件 → 检索上下文 → 调 LLM → diff 校
 
 ## 待实现
 
-- `cmd/tidy/main.go` — 单次 job,接 path 参数(或 --all)
-- `internal/llm/` — OpenAI 兼容客户端
-- `internal/safediff/` — 校验器(关键)
-- `internal/qdrant/` — 检索 top-K
-- `internal/atlas/` — MOC 维护
-- `Dockerfile` — 长驻服务,通过 IPC / HTTP 接收 api 的触发(或者每次 docker exec)
-- `go.mod` / `go.sum`
+- ~~`cmd/tidy/main.go` — 单次 job,接 path 参数(或 --all)~~ ✅
+- ~~`internal/llm/` — OpenAI 兼容客户端~~ ✅
+- ~~`internal/safediff/` — 校验器(关键)~~ ✅
+- ~~`internal/qdrant/` — 检索 top-K~~ ✅
+- ~~`internal/atlas/` — MOC 维护~~ ✅
+- ~~`Dockerfile` — 长驻服务,通过 IPC / HTTP 接收 api 的触发~~ ✅
+- ~~`go.mod` / `go.sum`~~ ✅

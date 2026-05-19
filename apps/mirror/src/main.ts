@@ -9,17 +9,12 @@
 // Echoes between the two halves are suppressed by the per-path record in
 // state.ts: every mirror-driven write notes (path, rev, mtimeMs); when the
 // watcher sees an event whose mtimeMs matches the record, it skips.
-//
-// As of this commit the LiveSyncCodec methods are NotImplementedError stubs.
-// The watcher will log a clear message and idle in that case so users can
-// validate the surrounding plumbing (compose volumes, env vars, CouchDB
-// connectivity) before swapping the codec in.
 
 import chokidar from 'chokidar';
 import { Couch } from './couch';
 import { loadConfig } from './config';
 import { isUnderHidden, SafeFS } from './fs';
-import { LiveSyncCodec, NotImplementedError } from './livesync';
+import { LiveSyncCodec } from './livesync';
 import { State } from './state';
 
 async function main(): Promise<void> {
@@ -30,20 +25,6 @@ async function main(): Promise<void> {
 
   const couch = new Couch(cfg.couchUrl, cfg.couchDb);
   const codec = new LiveSyncCodec(cfg.e2ePassphrase);
-
-  let codecWarned = false;
-  function warnCodecMissing(where: string, err: unknown): void {
-    if (codecWarned) return;
-    codecWarned = true;
-    console.warn(
-      '[mirror] LiveSyncCodec is a stub in this build (%s). Install ' +
-        '@vrtmrz/livesync-commonlib and finish src/livesync.ts. The ' +
-        'mirror is otherwise running and will start syncing as soon as ' +
-        'the codec is in place. (root cause: %s)',
-      where,
-      (err as Error).message,
-    );
-  }
 
   // === CouchDB → filesystem =================================================
 
@@ -57,16 +38,14 @@ async function main(): Promise<void> {
 
       try {
         if (c.deleted) {
-          // Translate the LiveSync delete into a vault-relative path. This
-          // also goes through the codec because LiveSync's id/path mapping
-          // can be non-trivial (chunked docs, etc.).
-          const file = codec.assembleFromCouchDoc(c.doc);
+          // Translate the LiveSync delete into a vault-relative path.
+          const file = await codec.assembleFromCouchDocAsync(c.doc, (id) => couch.get(id));
           if (!file) return;
           await fs.remove(file.path);
           await state.forgetPath(file.path);
           console.log('[mirror] couch->fs DELETE %s', file.path);
         } else {
-          const file = codec.assembleFromCouchDoc(c.doc);
+          const file = await codec.assembleFromCouchDocAsync(c.doc, (id) => couch.get(id));
           if (!file) return;
           if (isUnderHidden(file.path, cfg.knowlibDir)) return;
           await fs.writeAtomic(file.path, file.body);
@@ -78,10 +57,6 @@ async function main(): Promise<void> {
         }
         if (c.seq) await state.setCouchSeq(String(c.seq));
       } catch (err) {
-        if (err instanceof NotImplementedError) {
-          warnCodecMissing('changes feed', err);
-          return;
-        }
         console.error('[mirror] couch->fs error on doc %s: %s', c.id, (err as Error).message);
       }
     },
@@ -121,10 +96,8 @@ async function main(): Promise<void> {
 
     try {
       if (kind === 'unlink') {
-        // Delete in CouchDB. LiveSync uses content-derived ids, so the codec
-        // could compute the id from the path — but with the stubbed codec we
-        // can't. Log and bail; the real fix is the codec.
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        // Delete in CouchDB. We pass an empty buffer so the codec can compute
+        // the chunk id from the path for the delete operation.
         const file = { path: rel, body: Buffer.alloc(0) };
         const docs = codec.splitForCouchDoc(file);
         for (const d of docs) {
@@ -142,10 +115,6 @@ async function main(): Promise<void> {
         console.log('[mirror] fs->couch WRITE %s', rel);
       }
     } catch (err) {
-      if (err instanceof NotImplementedError) {
-        warnCodecMissing('watcher', err);
-        return;
-      }
       console.error('[mirror] fs->couch error on %s: %s', rel, (err as Error).message);
     }
   }

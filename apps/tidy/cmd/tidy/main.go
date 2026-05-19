@@ -36,8 +36,9 @@ func main() {
 			return
 		}
 		var in struct {
-			Paths []string `json:"paths"`
-			All   bool     `json:"all"`
+			Paths     []string         `json:"paths"`
+			All       bool             `json:"all"`
+			Overrides *tidy.Overrides  `json:"overrides,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			http.Error(w, "bad json", http.StatusBadRequest)
@@ -45,7 +46,7 @@ func main() {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
 		defer cancel()
-		out, err := engine.Run(ctx, in.Paths, in.All)
+		out, err := engine.Run(ctx, in.Paths, in.All, in.Overrides)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return

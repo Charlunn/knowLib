@@ -76,10 +76,22 @@ def _derive_tags(meta: dict[str, Any]) -> list[str]:
     return []
 
 
-def index_file(rel_path: str, store: QStore, model: EmbedModel) -> str:
+def index_file(
+    rel_path: str,
+    store: QStore,
+    model: EmbedModel,
+    *,
+    known_sha: str | None = None,
+    known_sha_loaded: bool = False,
+) -> str:
     """Embed and upsert a single file.
 
     Returns one of: "skipped" (sha unchanged), "indexed", "deleted", "missing".
+
+    `known_sha` and `known_sha_loaded`: when reconcile() has already pre-fetched
+    SHAs for every indexed file in one batch query, it passes them in here so
+    we don't pay an extra Qdrant round-trip per file. `known_sha_loaded=True`
+    with `known_sha=None` means "we checked, this file is not in Qdrant yet".
     """
     parsed = _read_note(rel_path)
     if parsed is None:
@@ -88,7 +100,11 @@ def index_file(rel_path: str, store: QStore, model: EmbedModel) -> str:
         return "missing"
 
     meta, body, sha = parsed
-    if store.get_file_sha(rel_path) == sha:
+    if known_sha_loaded:
+        existing_sha = known_sha
+    else:
+        existing_sha = store.get_file_sha(rel_path)
+    if existing_sha == sha:
         return "skipped"
 
     chunks = chunk_markdown(
@@ -153,14 +169,26 @@ def reconcile(store: QStore, model: EmbedModel) -> dict[str, int]:
     """Full sync: re-index changed files, drop orphans whose files vanished.
 
     Stats useful for /healthz and ops debugging.
+
+    We pull every indexed (path, sha) pair from Qdrant in a single paginated
+    scroll BEFORE walking the disk, then index_file() consults the in-memory
+    map instead of issuing a per-file query. This turns an O(N) round-trip
+    pattern into O(N/512), which matters once the vault has thousands of files.
     """
     on_disk = set(list_vault_md_files())
-    in_qdrant = store.all_indexed_paths()
+    indexed_shas = store.all_file_shas()
+    in_qdrant = set(indexed_shas.keys())
 
     stats = {"indexed": 0, "skipped": 0, "deleted": 0, "missing": 0}
 
     for rel in sorted(on_disk):
-        outcome = index_file(rel, store, model)
+        outcome = index_file(
+            rel,
+            store,
+            model,
+            known_sha=indexed_shas.get(rel),
+            known_sha_loaded=True,
+        )
         stats[outcome] = stats.get(outcome, 0) + 1
 
     for orphan in in_qdrant - on_disk:

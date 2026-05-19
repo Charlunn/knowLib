@@ -20,13 +20,13 @@ knowLib 主服务。HTTP REST + MCP server + TOTP 登录。
 
 ## 待实现
 
-- `cmd/api/main.go` — entrypoint
-- `internal/auth/` — TOTP + JWT
-- `internal/handlers/` — REST handlers
-- `internal/mcp/` — MCP server
-- `internal/store/` — 设置存储(JSON 文件 / BoltDB)
-- `internal/vault/` — 文件读写,封装 vault 路径访问
-- `internal/llm/` — OpenAI 兼容客户端
-- `internal/qdrant/` — Qdrant 客户端
-- `Dockerfile` — 多阶段构建
-- `go.mod` / `go.sum`
+- ~~`cmd/api/main.go` — entrypoint~~ ✅
+- ~~`internal/auth/` — TOTP + JWT~~ ✅
+- ~~`internal/handlers/` — REST handlers~~ ✅
+- ~~`internal/mcp/` — MCP server~~ ✅
+- ~~`internal/store/` — 设置存储(JSON 文件 / BoltDB)~~ ✅
+- ~~`internal/vault/` — 文件读写,封装 vault 路径访问~~ ✅
+- ~~`internal/llm/` — OpenAI 兼容客户端~~ ✅
+- ~~`internal/qdrant/` — Qdrant 客户端~~ ✅
+- ~~`Dockerfile` — 多阶段构建~~ ✅
+- ~~`go.mod` / `go.sum`~~ ✅
