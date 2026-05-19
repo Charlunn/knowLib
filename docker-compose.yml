@@ -1,0 +1,138 @@
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - ./data/caddy/log:/var/log/caddy
+    depends_on:
+      - api
+      - web
+      - couchdb
+
+  couchdb:
+    image: couchdb:3
+    restart: unless-stopped
+    environment:
+      COUCHDB_USER: ${COUCHDB_USER}
+      COUCHDB_PASSWORD: ${COUCHDB_PASSWORD}
+    volumes:
+      - ./data/couchdb:/opt/couchdb/data
+      - ./data/couchdb-config:/opt/couchdb/etc/local.d
+    # 不直接对外暴露端口;Caddy 通过 docker 网络内访问
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    volumes:
+      - ./data/qdrant:/qdrant/storage
+
+  embedder:
+    build: ./apps/embedder
+    restart: unless-stopped
+    environment:
+      EMBED_MODEL: ${EMBED_MODEL}
+      QDRANT_URL: ${QDRANT_URL}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION}
+      VAULT_PATH: ${VAULT_PATH}
+      KNOWLIB_DIR: ${KNOWLIB_DIR}
+      TZ: ${TZ}
+    volumes:
+      - ./data/vault:/data/vault
+      - ./data/embedder-cache:/cache  # huggingface 模型缓存
+    depends_on:
+      - qdrant
+
+  mirror:
+    build: ./apps/mirror
+    restart: unless-stopped
+    environment:
+      COUCHDB_URL: http://${COUCHDB_USER}:${COUCHDB_PASSWORD}@couchdb:5984
+      COUCHDB_DB: ${COUCHDB_DB}
+      E2E_PASSPHRASE: ${E2E_PASSPHRASE}
+      VAULT_PATH: ${VAULT_PATH}
+      KNOWLIB_DIR: ${KNOWLIB_DIR}
+      TZ: ${TZ}
+    volumes:
+      - ./data/vault:/data/vault
+      - ./data/mirror-state:/state
+    depends_on:
+      - couchdb
+
+  tidy:
+    build: ./apps/tidy
+    restart: unless-stopped
+    environment:
+      VAULT_PATH: ${VAULT_PATH}
+      INBOX_DIR: ${INBOX_DIR}
+      NOTES_DIR: ${NOTES_DIR}
+      ATLAS_DIR: ${ATLAS_DIR}
+      KNOWLIB_DIR: ${KNOWLIB_DIR}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL}
+      EMBED_BASE_URL: ${EMBED_BASE_URL}
+      EMBED_MODEL: ${EMBED_MODEL}
+      QDRANT_URL: ${QDRANT_URL}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION}
+      TIDY_TOP_K: ${TIDY_TOP_K}
+      TIDY_MAX_TOKENS: ${TIDY_MAX_TOKENS}
+      TZ: ${TZ}
+    volumes:
+      - ./data/vault:/data/vault
+    depends_on:
+      - embedder
+      - qdrant
+
+  api:
+    build: ./apps/api
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN}
+      JWT_SECRET: ${JWT_SECRET}
+      TOTP_ISSUER: ${TOTP_ISSUER}
+      TOTP_ACCOUNT: ${TOTP_ACCOUNT}
+      TOTP_SECRET: ${TOTP_SECRET}
+      VAULT_PATH: ${VAULT_PATH}
+      INBOX_DIR: ${INBOX_DIR}
+      NOTES_DIR: ${NOTES_DIR}
+      ATLAS_DIR: ${ATLAS_DIR}
+      KNOWLIB_DIR: ${KNOWLIB_DIR}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL}
+      EMBED_BASE_URL: ${EMBED_BASE_URL}
+      EMBED_MODEL: ${EMBED_MODEL}
+      QDRANT_URL: ${QDRANT_URL}
+      QDRANT_COLLECTION: ${QDRANT_COLLECTION}
+      TIDY_TOP_K: ${TIDY_TOP_K}
+      TZ: ${TZ}
+    volumes:
+      - ./data/vault:/data/vault
+      - ./data/api-state:/state
+    depends_on:
+      - qdrant
+      - embedder
+      - tidy
+
+  web:
+    build: ./apps/web
+    restart: unless-stopped
+    environment:
+      NEXT_PUBLIC_DOMAIN: ${DOMAIN}
+      API_INTERNAL_URL: http://api:8080
+      TZ: ${TZ}
+    depends_on:
+      - api
+
+volumes:
+  caddy_data:
+  caddy_config:

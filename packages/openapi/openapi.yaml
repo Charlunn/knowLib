@@ -1,0 +1,167 @@
+openapi: 3.1.0
+info:
+  title: knowLib API
+  version: 0.1.0
+  description: 自托管知识库 REST + MCP 接口
+servers:
+  - url: https://{domain}
+    variables:
+      domain:
+        default: knowlib.example.com
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+  schemas:
+    LoginReq:
+      type: object
+      required: [totp]
+      properties:
+        totp: { type: string, pattern: "^[0-9]{6}$" }
+    LoginRes:
+      type: object
+      properties:
+        token: { type: string }
+        expires_at: { type: string, format: date-time }
+    CaptureReq:
+      type: object
+      required: [content]
+      properties:
+        content: { type: string }
+        source:
+          type: string
+          enum: [web, obsidian, telegram, api, feishu, mcp]
+        ts: { type: string, format: date-time }
+    CaptureRes:
+      type: object
+      properties:
+        path: { type: string }
+    Note:
+      type: object
+      properties:
+        path: { type: string }
+        title: { type: string }
+        category: { type: string }
+        tags: { type: array, items: { type: string } }
+        frontmatter: { type: object, additionalProperties: true }
+        body: { type: string }
+    SearchHit:
+      type: object
+      properties:
+        path: { type: string }
+        title: { type: string }
+        snippet: { type: string }
+        score: { type: number }
+    TidyReq:
+      type: object
+      properties:
+        paths: { type: array, items: { type: string } }
+        all: { type: boolean }
+    TidyRes:
+      type: object
+      properties:
+        job_id: { type: string }
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              source_path: { type: string }
+              target_path: { type: string }
+              status: { type: string, enum: [ok, partial, failed] }
+              reason: { type: string }
+    Settings:
+      type: object
+      properties:
+        llm:
+          type: object
+          properties:
+            base_url: { type: string }
+            model: { type: string }
+            api_key_set: { type: boolean }
+        embed:
+          type: object
+          properties:
+            base_url: { type: string }
+            model: { type: string }
+        tidy:
+          type: object
+          properties:
+            top_k: { type: integer }
+            max_tokens: { type: integer }
+            mode: { type: string, enum: [manual, scheduled, threshold] }
+            cron: { type: string }
+            prompt: { type: string }
+
+security:
+  - bearerAuth: []
+
+paths:
+  /api/auth/login:
+    post:
+      security: []
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/LoginReq" } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/LoginRes" } } } }
+        "401": { description: invalid totp }
+        "429": { description: rate limited }
+
+  /api/capture:
+    post:
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CaptureReq" } } }
+      responses:
+        "201": { content: { application/json: { schema: { $ref: "#/components/schemas/CaptureRes" } } } }
+
+  /api/inbox:
+    get:
+      responses:
+        "200":
+          content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Note" } } } }
+
+  /api/tidy:
+    post:
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/TidyReq" } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/TidyRes" } } } }
+
+  /api/search:
+    get:
+      parameters:
+        - { in: query, name: q, schema: { type: string }, required: true }
+        - { in: query, name: k, schema: { type: integer, default: 10 } }
+      responses:
+        "200":
+          content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/SearchHit" } } } }
+
+  /api/note:
+    get:
+      parameters:
+        - { in: query, name: path, schema: { type: string }, required: true }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Note" } } } }
+
+  /api/list:
+    get:
+      parameters:
+        - { in: query, name: category, schema: { type: string } }
+      responses:
+        "200":
+          content: { application/json: { schema: { type: array, items: { $ref: "#/components/schemas/Note" } } } }
+
+  /api/settings:
+    get:
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Settings" } } } }
+    put:
+      requestBody:
+        content: { application/json: { schema: { $ref: "#/components/schemas/Settings" } } }
+      responses:
+        "200": { content: { application/json: { schema: { $ref: "#/components/schemas/Settings" } } } }

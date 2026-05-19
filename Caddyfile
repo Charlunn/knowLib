@@ -1,0 +1,35 @@
+# Caddy v2 — knowLib 反向代理
+# 自动从 Let's Encrypt 申请证书。需要 80/443 端口对外可达。
+{
+	email admin@{$DOMAIN}
+}
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# === Obsidian LiveSync (CouchDB) ===
+	# Obsidian 端配置 https://<domain>/sync 作为 endpoint
+	handle_path /sync/* {
+		reverse_proxy couchdb:5984
+	}
+
+	# === MCP server (SSE + JSON-RPC) ===
+	handle /mcp* {
+		reverse_proxy api:8080
+	}
+
+	# === REST API ===
+	handle /api/* {
+		reverse_proxy api:8080
+	}
+
+	# === Web 前端 (Next.js) ===
+	handle {
+		reverse_proxy web:3000
+	}
+
+	log {
+		output file /var/log/caddy/access.log
+		format json
+	}
+}
