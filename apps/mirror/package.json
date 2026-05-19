@@ -1,0 +1,22 @@
+{
+  "name": "@knowlib/mirror",
+  "version": "0.1.0",
+  "private": true,
+  "description": "knowLib vault-mirror: bridges CouchDB (LiveSync) and the local vault filesystem.",
+  "scripts": {
+    "build": "tsc -p .",
+    "start": "node dist/main.js",
+    "dev": "tsx src/main.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "chokidar": "3.6.0",
+    "level": "8.0.1",
+    "nano": "10.1.4"
+  },
+  "devDependencies": {
+    "@types/node": "20.17.6",
+    "tsx": "4.19.2",
+    "typescript": "5.6.3"
+  }
+}
