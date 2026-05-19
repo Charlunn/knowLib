@@ -114,10 +114,14 @@ services:
       QDRANT_URL: ${QDRANT_URL}
       QDRANT_COLLECTION: ${QDRANT_COLLECTION}
       TIDY_TOP_K: ${TIDY_TOP_K}
+      TIDY_SERVICE_URL: http://tidy:8081
+      SKILL_BUNDLE_DIR: /skill-bundle
       TZ: ${TZ}
     volumes:
       - ./data/vault:/data/vault
       - ./data/api-state:/state
+      # Skill bundle templates: api substitutes {{SERVER_URL}}/{{API_TOKEN}} on download.
+      - ./packages/skill-bundle:/skill-bundle:ro
     depends_on:
       - qdrant
       - embedder
