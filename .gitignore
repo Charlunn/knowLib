@@ -49,6 +49,9 @@ out/
 Thumbs.db
 *.swp
 
+# Claude Code worktrees / agent state
+.claude/
+
 # 日志
 *.log
 logs/

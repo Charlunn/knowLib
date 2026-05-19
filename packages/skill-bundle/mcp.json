@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "knowlib": {
+      "url": "{{SERVER_URL}}/mcp",
+      "headers": {
+        "Authorization": "Bearer {{API_TOKEN}}"
+      },
+      "_comment": "knowLib MCP server. Tools: search_notes, get_note, list_notes, capture_note. Replace {{SERVER_URL}} and {{API_TOKEN}} (the bundle download endpoint does this for you)."
+    }
+  }
+}

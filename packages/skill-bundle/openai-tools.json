@@ -1,0 +1,68 @@
+[
+  {
+    "type": "function",
+    "function": {
+      "name": "knowlib_search_notes",
+      "description": "Semantic search over the user's personal knowledge base (knowLib). Returns notes ranked by semantic similarity, even when the query wording differs from note content. Use when the user asks 'what do I know about X' or for grounding answers in the user's own notes.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "Natural language query." },
+          "k": { "type": "integer", "description": "Number of hits to return (default 8, max 25).", "default": 8 }
+        },
+        "required": ["query"]
+      }
+    },
+    "_endpoint": "GET {{SERVER_URL}}/api/search?q={query}&k={k}",
+    "_auth": "Authorization: Bearer {{API_TOKEN}}"
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "knowlib_get_note",
+      "description": "Fetch the full content + frontmatter of a specific note in knowLib by its vault-relative path (as returned by search_notes).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "path": { "type": "string", "description": "Vault-relative path, e.g. 'notes/学习/高数/微分方程.md'." }
+        },
+        "required": ["path"]
+      }
+    },
+    "_endpoint": "GET {{SERVER_URL}}/api/note?path={path}",
+    "_auth": "Authorization: Bearer {{API_TOKEN}}"
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "knowlib_list_notes",
+      "description": "List notes under a category prefix (or all notes if category omitted).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "category": { "type": "string", "description": "Category prefix, e.g. '学习/高数'." }
+        }
+      }
+    },
+    "_endpoint": "GET {{SERVER_URL}}/api/list?category={category}",
+    "_auth": "Authorization: Bearer {{API_TOKEN}}"
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "knowlib_capture_note",
+      "description": "Quickly capture a thought, idea, or piece of content into the user's knowLib inbox. Goes to inbox/ and is later sorted by the tidy worker. Use this when the user says 'remember this' or 'save this idea'.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "content": { "type": "string", "description": "The note text. Plain markdown is fine." },
+          "source": { "type": "string", "enum": ["mcp", "ai", "claude", "chatgpt", "other"], "default": "ai" }
+        },
+        "required": ["content"]
+      }
+    },
+    "_endpoint": "POST {{SERVER_URL}}/api/capture",
+    "_auth": "Authorization: Bearer {{API_TOKEN}}",
+    "_body": "{\"content\": \"...\", \"source\": \"ai\"}"
+  }
+]
