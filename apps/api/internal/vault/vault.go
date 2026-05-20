@@ -211,6 +211,83 @@ func deriveCategoryFromPath(rel, base string) string {
 	return strings.Join(parts[:len(parts)-1], "/")
 }
 
+// ListInboxAndRoot returns inbox/ files plus root-level .md files (since
+// Obsidian creates new notes at vault root by default when clicking
+// unresolved wikilinks). Files inside notes/ or .knowlib/ are excluded so
+// already-tidied notes and archives aren't shown as inbox items.
+func (v *Vault) ListInboxAndRoot() ([]Listing, error) {
+	var out []Listing
+
+	// 1) Walk inbox subtree.
+	inboxAbs, err := v.ResolvePath(v.InboxDir)
+	if err == nil {
+		err := filepath.WalkDir(inboxAbs, func(p string, d fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				if errors.Is(walkErr, fs.ErrNotExist) && p == inboxAbs {
+					return nil
+				}
+				return walkErr
+			}
+			if d.IsDir() {
+				name := d.Name()
+				if name == v.HiddenDir || strings.HasPrefix(name, ".") {
+					return fs.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(d.Name(), ".md") || strings.HasPrefix(d.Name(), ".") {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			rp, err := v.Rel(p)
+			if err != nil {
+				return err
+			}
+			out = append(out, Listing{
+				Path:    rp,
+				Title:   strings.TrimSuffix(d.Name(), ".md"),
+				Size:    info.Size(),
+				ModTime: info.ModTime(),
+			})
+			return nil
+		})
+		_ = err
+	}
+
+	// 2) Top-level .md files at vault root (not recursing into subdirs).
+	rootEntries, err := os.ReadDir(v.Root)
+	if err == nil {
+		for _, e := range rootEntries {
+			if e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if !strings.HasSuffix(name, ".md") || strings.HasPrefix(name, ".") {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil {
+				continue
+			}
+			out = append(out, Listing{
+				Path:    name,
+				Title:   strings.TrimSuffix(name, ".md"),
+				Size:    info.Size(),
+				ModTime: info.ModTime(),
+			})
+		}
+	}
+
+	if out == nil {
+		out = []Listing{}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ModTime.After(out[j].ModTime) })
+	return out, nil
+}
+
 // Delete removes a file under the vault. Used to drop stale captures, etc.
 func (v *Vault) Delete(rel string) error {
 	abs, err := v.ResolvePath(rel)

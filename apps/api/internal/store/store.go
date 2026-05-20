@@ -81,9 +81,17 @@ type Settings struct {
 
 	TidyTopK      int    `json:"tidy_top_k"`
 	TidyMaxTokens int    `json:"tidy_max_tokens"`
-	TidyMode      string `json:"tidy_mode"` // "manual" only in Phase 1
+	TidyMode      string `json:"tidy_mode"` // "manual" | "scheduled" | "threshold" | "both"
 	TidyCron      string `json:"tidy_cron,omitempty"`
 	TidyPrompt    string `json:"tidy_prompt"`
+
+	// Auto-tidy controls. AutoTidyEnabled is the master switch; the threshold
+	// fires when inbox size >= AutoTidyThreshold, the schedule fires per
+	// AutoTidyCronSpec (Go cron format with seconds field). Both can be
+	// active simultaneously.
+	AutoTidyEnabled   bool   `json:"auto_tidy_enabled"`
+	AutoTidyThreshold int    `json:"auto_tidy_threshold"` // 0 = disabled
+	AutoTidyCronSpec  string `json:"auto_tidy_cron_spec"` // empty = no schedule
 }
 
 const settingsKey = "current"
@@ -151,20 +159,24 @@ func (s *Store) PutSettings(st Settings) error {
 		bk := tx.Bucket(bucketSettings)
 		// We persist non-secret fields as JSON.
 		body := struct {
-			LLMBaseURL    string `json:"llm_base_url"`
-			LLMModel      string `json:"llm_model"`
-			EmbedBaseURL  string `json:"embed_base_url"`
-			EmbedModel    string `json:"embed_model"`
-			TidyTopK      int    `json:"tidy_top_k"`
-			TidyMaxTokens int    `json:"tidy_max_tokens"`
-			TidyMode      string `json:"tidy_mode"`
-			TidyCron      string `json:"tidy_cron,omitempty"`
-			TidyPrompt    string `json:"tidy_prompt"`
+			LLMBaseURL        string `json:"llm_base_url"`
+			LLMModel          string `json:"llm_model"`
+			EmbedBaseURL      string `json:"embed_base_url"`
+			EmbedModel        string `json:"embed_model"`
+			TidyTopK          int    `json:"tidy_top_k"`
+			TidyMaxTokens     int    `json:"tidy_max_tokens"`
+			TidyMode          string `json:"tidy_mode"`
+			TidyCron          string `json:"tidy_cron,omitempty"`
+			TidyPrompt        string `json:"tidy_prompt"`
+			AutoTidyEnabled   bool   `json:"auto_tidy_enabled"`
+			AutoTidyThreshold int    `json:"auto_tidy_threshold"`
+			AutoTidyCronSpec  string `json:"auto_tidy_cron_spec"`
 		}{
 			st.LLMBaseURL, st.LLMModel,
 			st.EmbedBaseURL, st.EmbedModel,
 			st.TidyTopK, st.TidyMaxTokens,
 			st.TidyMode, st.TidyCron, st.TidyPrompt,
+			st.AutoTidyEnabled, st.AutoTidyThreshold, st.AutoTidyCronSpec,
 		}
 		raw, err := json.Marshal(body)
 		if err != nil {

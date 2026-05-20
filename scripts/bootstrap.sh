@@ -103,7 +103,7 @@ echo "  to decrypt your data. Lose it and your encrypted history is unrecoverabl
 echo
 
 echo "==> Creating vault skeleton"
-mkdir -p data/vault/inbox data/vault/notes data/vault/atlas data/vault/.knowlib/prompts
+mkdir -p data/vault/inbox data/vault/notes data/vault/.knowlib/prompts data/vault/.knowlib/inbox-archive
 mkdir -p data/api-state data/mirror-state data/embedder-cache data/caddy/log
 
 if [[ ! -f data/vault/.knowlib/prompts/tidy.md ]]; then

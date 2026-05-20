@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/charlunn/knowlib/api/internal/auth"
+	"github.com/charlunn/knowlib/api/internal/autotidy"
 	"github.com/charlunn/knowlib/api/internal/config"
 	"github.com/charlunn/knowlib/api/internal/handlers"
 	"github.com/charlunn/knowlib/api/internal/httpx"
@@ -95,6 +96,11 @@ func main() {
 		Handler:           r,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+
+	// Start auto-tidy scheduler.
+	sched := autotidy.New(cfg, st, v, tidy)
+	sched.Start()
+	defer sched.Stop()
 
 	// Graceful shutdown so a docker stop doesn't abort an in-flight tidy call.
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

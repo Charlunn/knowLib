@@ -94,11 +94,6 @@ var baseCategories = []string{
 	"备忘",
 }
 
-// maxNotePathDepth caps how deeply a note can be nested under notes/.
-// notes/X.md = 1, notes/X/Y.md = 2, notes/X/Y/Z.md = 3. Anything past 3
-// gets clamped to a sensible parent during execution.
-const maxNotePathDepth = 3
-
 // ensureBaseTopics creates the topic entry stubs (notes/学习.md etc.) if
 // they don't exist. Each stub is a minimal index file the LLM can extend.
 func (e *Engine) ensureBaseTopics() {
@@ -272,8 +267,6 @@ func (e *Engine) runOne(ctx context.Context, srcPath string, rc *runtimeContext)
 		out.Reason = "no target_path or category/title in LLM output"
 		return out
 	}
-	// Enforce path depth limit. Drop intermediate dirs to stay <= max depth.
-	target = clampPathDepth(target, e.Cfg.NotesDir, maxNotePathDepth)
 	out.TargetPath = target
 	out.Action = parsed.Action
 
@@ -322,15 +315,26 @@ func (e *Engine) runOne(ctx context.Context, srcPath string, rc *runtimeContext)
 		e.applyIndexUpdate(parsed)
 	}
 
-	// 7. Delete the inbox source and clean up empty parent directories.
-	_ = e.FS.Remove(srcPath)
-	_ = e.FS.RemoveEmptyDirs(filepath.Dir(srcPath), e.FS.InboxDir)
-
-	// 8. Log.
-	_ = e.FS.AppendLog("tidy.log", fmt.Sprintf(
-		"%s -> %s (action=%s, model=%s)",
-		srcPath, target, parsed.Action, rc.model,
-	))
+	// 7. Archive the inbox source instead of just deleting (preserves history).
+	if archivePath, err := e.FS.ArchiveInbox(srcPath); err == nil {
+		// Best-effort: try cleaning empty parent dirs if the source was
+		// nested (e.g. inbox/notion/sub/x.md), but never touch root.
+		if strings.HasPrefix(srcPath, e.FS.InboxDir+"/") {
+			_ = e.FS.RemoveEmptyDirs(filepath.Dir(srcPath), e.FS.InboxDir)
+		}
+		_ = e.FS.AppendLog("tidy.log", fmt.Sprintf(
+			"%s -> %s (action=%s, model=%s, archived=%s)",
+			srcPath, target, parsed.Action, rc.model, archivePath,
+		))
+	} else {
+		// Archive failed — fall back to plain delete so we don't leak the
+		// inbox file forever. Log the failure for diagnosis.
+		_ = e.FS.Remove(srcPath)
+		_ = e.FS.AppendLog("tidy.log", fmt.Sprintf(
+			"%s -> %s (action=%s, model=%s, archive_failed=%v)",
+			srcPath, target, parsed.Action, rc.model, err,
+		))
+	}
 
 	out.Status = "ok"
 	return out
@@ -585,34 +589,6 @@ func safeFilename(s string) string {
 		s = "untitled"
 	}
 	return s
-}
-
-// clampPathDepth ensures `target` doesn't go more than `maxDepth` levels
-// under `notesDir`. If it does, the deepest directories collapse upward.
-//
-// Example with maxDepth=3:
-//
-//	notes/A/B/C/D/E.md  →  notes/A/B/E.md
-//	notes/A/B.md        →  unchanged (depth 2)
-//	notes/A/B/C.md      →  unchanged (depth 3)
-func clampPathDepth(target, notesDir string, maxDepth int) string {
-	target = strings.ReplaceAll(target, `\`, "/")
-	notesDir = strings.Trim(notesDir, "/")
-	prefix := notesDir + "/"
-	if !strings.HasPrefix(target, prefix) {
-		return target
-	}
-	rest := strings.TrimPrefix(target, prefix)
-	parts := strings.Split(rest, "/")
-	// parts := ["A", "B", "C", "D", "E.md"] for the example above.
-	// depth = len(parts). We want depth <= maxDepth.
-	if len(parts) <= maxDepth {
-		return target
-	}
-	// Keep the first (maxDepth-1) directories and the final filename;
-	// the middle slice is dropped.
-	keep := append(parts[:maxDepth-1], parts[len(parts)-1])
-	return prefix + strings.Join(keep, "/")
 }
 
 type slimHit struct {

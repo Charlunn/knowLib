@@ -64,6 +64,11 @@ export interface Settings {
     cron?: string;
     prompt?: string;
   };
+  auto_tidy?: {
+    enabled?: boolean;
+    threshold?: number;
+    cron_spec?: string;
+  };
 }
 
 export interface SettingsUpdate {
@@ -82,6 +87,11 @@ export interface SettingsUpdate {
     mode?: TidyMode;
     cron?: string;
     prompt?: string;
+  };
+  auto_tidy?: {
+    enabled?: boolean;
+    threshold?: number;
+    cron_spec?: string;
   };
 }
 

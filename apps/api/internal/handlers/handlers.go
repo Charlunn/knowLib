@@ -191,7 +191,9 @@ func buildInboxBody(content, source string, ts time.Time) string {
 
 func Inbox(d *Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		out, err := d.Vault.ListSubtree(d.Cfg.InboxDir)
+		// Include vault root .md files because Obsidian creates new notes
+		// at the vault root by default (clicking an unresolved wikilink).
+		out, err := d.Vault.ListInboxAndRoot()
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -425,28 +427,37 @@ func PutSettings(d *Deps) http.HandlerFunc {
 				Cron      string `json:"cron"`
 				Prompt    string `json:"prompt"`
 			} `json:"tidy"`
+			AutoTidy struct {
+				Enabled   bool   `json:"enabled"`
+				Threshold int    `json:"threshold"`
+				CronSpec  string `json:"cron_spec"`
+			} `json:"auto_tidy"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "bad json")
 			return
 		}
-		// Phase 1: only "manual" mode is allowed. Reject silently rather than
-		// pretend we'll honour a cron we haven't built yet.
-		if in.Tidy.Mode != "" && in.Tidy.Mode != "manual" {
-			writeError(w, http.StatusBadRequest, "tidy.mode: only 'manual' supported in Phase 1")
+		// Tidy mode now supports manual (default), scheduled, threshold, both.
+		switch in.Tidy.Mode {
+		case "", "manual", "scheduled", "threshold", "both":
+		default:
+			writeError(w, http.StatusBadRequest, "tidy.mode: must be manual|scheduled|threshold|both")
 			return
 		}
 		st := store.Settings{
-			LLMBaseURL:    in.LLM.BaseURL,
-			LLMModel:      in.LLM.Model,
-			LLMAPIKey:     in.LLM.APIKey,
-			EmbedBaseURL:  in.Embed.BaseURL,
-			EmbedModel:    in.Embed.Model,
-			TidyTopK:      in.Tidy.TopK,
-			TidyMaxTokens: in.Tidy.MaxTokens,
-			TidyMode:      in.Tidy.Mode,
-			TidyCron:      in.Tidy.Cron,
-			TidyPrompt:    in.Tidy.Prompt,
+			LLMBaseURL:        in.LLM.BaseURL,
+			LLMModel:          in.LLM.Model,
+			LLMAPIKey:         in.LLM.APIKey,
+			EmbedBaseURL:      in.Embed.BaseURL,
+			EmbedModel:        in.Embed.Model,
+			TidyTopK:          in.Tidy.TopK,
+			TidyMaxTokens:     in.Tidy.MaxTokens,
+			TidyMode:          in.Tidy.Mode,
+			TidyCron:          in.Tidy.Cron,
+			TidyPrompt:        in.Tidy.Prompt,
+			AutoTidyEnabled:   in.AutoTidy.Enabled,
+			AutoTidyThreshold: in.AutoTidy.Threshold,
+			AutoTidyCronSpec:  in.AutoTidy.CronSpec,
 		}
 		if err := d.Store.PutSettings(st); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -493,6 +504,11 @@ func settingsResponse(st store.Settings) map[string]any {
 			"mode":       st.TidyMode,
 			"cron":       st.TidyCron,
 			"prompt":     st.TidyPrompt,
+		},
+		"auto_tidy": map[string]any{
+			"enabled":   st.AutoTidyEnabled,
+			"threshold": st.AutoTidyThreshold,
+			"cron_spec": st.AutoTidyCronSpec,
 		},
 	}
 }
