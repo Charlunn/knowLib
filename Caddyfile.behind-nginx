@@ -1,7 +1,6 @@
 # Caddyfile.behind-nginx
 # 宿主 nginx 处理 TLS，转发明文到容器 8080。
 # Caddy 在此只做内部服务路由，不管证书。
-# 使用方式: scripts/start-behind-nginx.sh
 {
 	auto_https off
 }
@@ -9,10 +8,17 @@
 :8080 {
 	encode zstd gzip
 
-	# === Obsidian LiveSync (CouchDB) ===
-	handle_path /sync/* {
-		reverse_proxy couchdb:5984
+	# === WebDAV for Obsidian Remotely Save ===
+	# Obsidian 配置: https://<domain>/dav
+	handle /dav* {
+		uri strip_prefix /dav
+		reverse_proxy webdav:80
 	}
+
+	# === Obsidian LiveSync (CouchDB) — 保留兼容，暂不使用 ===
+	# handle_path /sync/* {
+	# 	reverse_proxy couchdb:5984
+	# }
 
 	# === MCP server (SSE + JSON-RPC) ===
 	handle /mcp* {

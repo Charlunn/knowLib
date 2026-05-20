@@ -3,6 +3,9 @@
 # Caddy 退化为内部 HTTP 反代，仅绑定 127.0.0.1:8080。
 # TLS 由宿主 nginx + certbot 负责。
 #
+# 架构: nginx → caddy → {api, web, webdav}
+# 同步: Obsidian ← Remotely Save (WebDAV) → data/vault/ ← knowLib services
+#
 # 启动方式: scripts/start-behind-nginx.sh
 # 或手动:   docker compose -f docker-compose.behind-nginx.yml up -d
 
@@ -11,7 +14,6 @@ services:
     image: caddy:2-alpine
     restart: unless-stopped
     ports:
-      # 只绑 loopback，宿主 nginx 通过 127.0.0.1:8080 反代进来
       - "127.0.0.1:8080:8080"
     volumes:
       - ./Caddyfile.behind-nginx:/etc/caddy/Caddyfile:ro
@@ -21,21 +23,24 @@ services:
     depends_on:
       - api
       - web
-      - couchdb
+      - webdav
     networks:
       - default
-      - knowlib-shared  # 加入共享网络，让外部 nginx 能直接访问
-      - new-api-network # nginx 所在网络，让 nginx 能解析 knowlib-caddy-1
+      - knowlib-shared
+      - new-api-network
 
-  couchdb:
-    image: couchdb:3
+  # WebDAV server for Obsidian Remotely Save plugin.
+  # Serves data/vault/ over WebDAV with Basic Auth.
+  webdav:
+    image: bytemark/webdav:latest
     restart: unless-stopped
     environment:
-      COUCHDB_USER: ${COUCHDB_USER}
-      COUCHDB_PASSWORD: ${COUCHDB_PASSWORD}
+      AUTH_TYPE: Basic
+      USERNAME: ${WEBDAV_USER:-obsidian}
+      PASSWORD: ${WEBDAV_PASSWORD:-${COUCHDB_OBSIDIAN_PASSWORD}}
     volumes:
-      - ./data/couchdb:/opt/couchdb/data
-      - ./data/couchdb-config:/opt/couchdb/etc/local.d
+      - ./data/vault:/var/lib/dav/data
+    # No ports exposed — only reachable via caddy on the internal network.
 
   qdrant:
     image: qdrant/qdrant:latest
@@ -58,22 +63,6 @@ services:
       - ./data/embedder-cache:/cache
     depends_on:
       - qdrant
-
-  mirror:
-    build: ./apps/mirror
-    restart: unless-stopped
-    environment:
-      COUCHDB_URL: http://${COUCHDB_USER}:${COUCHDB_PASSWORD}@couchdb:5984
-      COUCHDB_DB: ${COUCHDB_DB}
-      E2E_PASSPHRASE: ${E2E_PASSPHRASE}
-      VAULT_PATH: ${VAULT_PATH}
-      KNOWLIB_DIR: ${KNOWLIB_DIR}
-      TZ: ${TZ}
-    volumes:
-      - ./data/vault:/data/vault
-      - ./data/mirror-state:/state
-    depends_on:
-      - couchdb
 
   tidy:
     build: ./apps/tidy
@@ -151,6 +140,6 @@ volumes:
 networks:
   default:
   knowlib-shared:
-    external: true   # 由 `docker network create knowlib-shared` 预先创建
+    external: true
   new-api-network:
-    external: true   # nginx 所在网络（new-api 项目）
+    external: true
