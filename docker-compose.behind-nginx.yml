@@ -51,6 +51,7 @@ services:
   embedder:
     build: ./apps/embedder
     restart: unless-stopped
+    user: "33:33"  # match WebDAV uid
     environment:
       EMBED_MODEL: ${EMBED_MODEL}
       QDRANT_URL: ${QDRANT_URL}
@@ -67,6 +68,7 @@ services:
   tidy:
     build: ./apps/tidy
     restart: unless-stopped
+    user: "33:33"  # match WebDAV (www-data) so files are always writable
     environment:
       VAULT_PATH: ${VAULT_PATH}
       INBOX_DIR: ${INBOX_DIR}
@@ -92,6 +94,7 @@ services:
   api:
     build: ./apps/api
     restart: unless-stopped
+    user: "33:33"  # match WebDAV (www-data) so files are always writable
     environment:
       DOMAIN: ${DOMAIN}
       JWT_SECRET: ${JWT_SECRET}
