@@ -101,3 +101,28 @@ export interface ApiToken {
   created_at: string;
   last_used_at?: string;
 }
+
+export interface AIOpsOperation {
+  type: 'create' | 'modify' | 'rename' | 'delete';
+  path?: string;
+  from?: string;
+  to?: string;
+  content?: string;
+  reason?: string;
+  before?: string;
+  summary?: string;
+  issues?: Array<{
+    kind: 'error' | 'outdated' | 'uncertain';
+    original?: string;
+    fixed?: string;
+    marked_as?: string;
+    note?: string;
+    explanation?: string;
+  }>;
+}
+
+export interface AIOpsResponse {
+  action: string;
+  summary: string;
+  operations: AIOpsOperation[];
+}

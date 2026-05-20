@@ -13,6 +13,7 @@ import type {
   SettingsUpdate,
   TidyReq,
   TidyRes,
+  AIOpsResponse,
 } from './types';
 
 export class ApiError extends Error {
@@ -138,5 +139,24 @@ export const api = {
 
   async revokeToken(id: string): Promise<void> {
     await request<void>(`/api/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+
+  async aiAction(req: {
+    action: 'deep_tidy' | 'polish_logic' | 'rewrite' | 'knowledge_check';
+    paths?: string[];
+    folder?: string;
+    preview_only?: boolean;
+  }): Promise<AIOpsResponse> {
+    return request<AIOpsResponse>('/api/ai-action', {
+      method: 'POST',
+      body: JSON.stringify(req),
+    });
+  },
+
+  async applyAiAction(resp: AIOpsResponse): Promise<{ applied: true }> {
+    return request<{ applied: true }>('/api/ai-action/apply', {
+      method: 'POST',
+      body: JSON.stringify(resp),
+    });
   },
 };

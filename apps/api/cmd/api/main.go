@@ -74,6 +74,8 @@ func main() {
 		g.Get("/api/note", handlers.Note(deps))
 		g.Get("/api/search", handlers.Search(deps))
 		g.Post("/api/tidy", handlers.Tidy(deps))
+		g.Post("/api/ai-action", handlers.AIAction(deps))
+		g.Post("/api/ai-action/apply", handlers.AIActionApply(deps))
 
 		g.Get("/api/settings", handlers.GetSettings(deps))
 		g.Put("/api/settings", handlers.PutSettings(deps))

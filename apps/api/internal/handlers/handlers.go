@@ -386,6 +386,105 @@ func Tidy(d *Deps) http.HandlerFunc {
 	}
 }
 
+// === ai-action ================================================================
+
+// AIAction triggers a batch AI op (deep_tidy / polish_logic / rewrite /
+// knowledge_check). When preview_only is true, returns operations without
+// applying. The web UI shows the operations as a diff and asks the user
+// to confirm; confirmation hits AIActionApply with the same operations.
+func AIAction(d *Deps) http.HandlerFunc {
+	defaults := buildDefaultSettings(d.Cfg)
+	return func(w http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Action      string   `json:"action"`
+			Paths       []string `json:"paths,omitempty"`
+			Folder      string   `json:"folder,omitempty"`
+			PreviewOnly bool     `json:"preview_only"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "bad json")
+			return
+		}
+		// Validate action.
+		switch in.Action {
+		case "deep_tidy", "polish_logic", "rewrite", "knowledge_check":
+		default:
+			writeError(w, http.StatusBadRequest, "unknown action")
+			return
+		}
+		// Sanity-check paths.
+		for _, p := range in.Paths {
+			if _, err := d.Vault.ResolvePath(p); err != nil {
+				writeError(w, http.StatusBadRequest, "bad path: "+p)
+				return
+			}
+		}
+		if in.Folder != "" {
+			if _, err := d.Vault.ResolvePath(in.Folder); err != nil {
+				writeError(w, http.StatusBadRequest, "bad folder: "+in.Folder)
+				return
+			}
+		}
+		if len(in.Paths) == 0 && in.Folder == "" {
+			writeError(w, http.StatusBadRequest, "must provide paths or folder")
+			return
+		}
+		// Inject overrides from current settings.
+		st, err := d.Store.GetSettings(defaults)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		req := httpx.AIOpsRequest{
+			Action:      in.Action,
+			Paths:       in.Paths,
+			Folder:      in.Folder,
+			PreviewOnly: in.PreviewOnly,
+			Overrides: &httpx.AIOpsOverrides{
+				LLMBaseURL: st.LLMBaseURL,
+				LLMAPIKey:  st.LLMAPIKey,
+				LLMModel:   st.LLMModel,
+				MaxTokens:  st.TidyMaxTokens,
+			},
+		}
+		out, err := d.Tidy.RunAIOps(r.Context(), req)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// AIActionApply executes the operations returned by a previous AIAction call.
+// The web UI calls this after the user confirms the diff preview.
+func AIActionApply(d *Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var in httpx.AIOpsResponse
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "bad json")
+			return
+		}
+		// Validate every op's path stays inside the vault.
+		for _, op := range in.Operations {
+			for _, p := range []string{op.Path, op.From, op.To} {
+				if p == "" {
+					continue
+				}
+				if _, err := d.Vault.ResolvePath(p); err != nil {
+					writeError(w, http.StatusBadRequest, "bad path: "+p)
+					return
+				}
+			}
+		}
+		if err := d.Tidy.ApplyAIOps(r.Context(), in); err != nil {
+			writeError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"applied": true})
+	}
+}
+
 // === settings =================================================================
 
 func GetSettings(d *Deps) http.HandlerFunc {

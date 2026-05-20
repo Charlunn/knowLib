@@ -1,4 +1,7 @@
-// tidy worker — long-running HTTP service. POST /run triggers a tidy job.
+// tidy worker — long-running HTTP service.
+//   POST /run         — process inbox files (existing behavior).
+//   POST /ai-action   — batch AI ops on existing notes (deep_tidy, polish_logic,
+//                       rewrite, knowledge_check).
 package main
 
 import (
@@ -9,11 +12,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/charlunn/knowlib/tidy/internal/aiops"
 	"github.com/charlunn/knowlib/tidy/internal/config"
+	"github.com/charlunn/knowlib/tidy/internal/llm"
 	"github.com/charlunn/knowlib/tidy/internal/tidy"
+	"github.com/charlunn/knowlib/tidy/internal/vaultfs"
 )
 
 func main() {
@@ -22,6 +29,12 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 	engine := tidy.NewEngine(cfg)
+
+	// Shared vaultfs / llm for ai-action endpoint.
+	fs := vaultfs.New(cfg.VaultPath, cfg.InboxDir, cfg.NotesDir, cfg.AtlasDir, cfg.KnowlibDir)
+	defaultLLM := llm.New(cfg.OpenAIBaseURL, cfg.OpenAIAPIKey, cfg.OpenAIModel)
+	promptDir := filepath.Join(cfg.VaultPath, cfg.KnowlibDir, "prompts")
+	aiEngine := aiops.New(fs, defaultLLM, promptDir)
 
 	mux := http.NewServeMux()
 
@@ -36,9 +49,9 @@ func main() {
 			return
 		}
 		var in struct {
-			Paths     []string         `json:"paths"`
-			All       bool             `json:"all"`
-			Overrides *tidy.Overrides  `json:"overrides,omitempty"`
+			Paths     []string        `json:"paths"`
+			All       bool            `json:"all"`
+			Overrides *tidy.Overrides `json:"overrides,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			http.Error(w, "bad json", http.StatusBadRequest)
@@ -53,6 +66,49 @@ func main() {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(out)
+	})
+
+	mux.HandleFunc("/ai-action", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		var in aiops.Request
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+		defer cancel()
+		out, err := aiEngine.Run(ctx, in)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
+	})
+
+	mux.HandleFunc("/ai-action/apply", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		// Body is the previously-returned response; we just apply its operations.
+		var in aiops.Response
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		// Apply via a no-LLM fast path: synthesise a Request with PreviewOnly=false
+		// and the pre-resolved operations. We bypass the LLM by going directly
+		// through the engine's apply method (exposed via a thin wrapper).
+		if err := aiEngine.ApplyOperations(in.Operations); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"applied":true}`))
 	})
 
 	srv := &http.Server{

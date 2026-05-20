@@ -270,3 +270,85 @@ func (c *TidyClient) Run(ctx context.Context, req TidyRequest) (*TidyResponse, e
 	}
 	return &tr, nil
 }
+
+// === AI ops client ============================================================
+
+// AIOpsRequest is forwarded to /ai-action.
+type AIOpsRequest struct {
+	Action      string             `json:"action"`
+	Paths       []string           `json:"paths,omitempty"`
+	Folder      string             `json:"folder,omitempty"`
+	PreviewOnly bool               `json:"preview_only"`
+	Overrides   *AIOpsOverrides    `json:"overrides,omitempty"`
+}
+
+type AIOpsOverrides struct {
+	LLMBaseURL   string `json:"llm_base_url,omitempty"`
+	LLMAPIKey    string `json:"llm_api_key,omitempty"`
+	LLMModel     string `json:"llm_model,omitempty"`
+	MaxTokens    int    `json:"max_tokens,omitempty"`
+	PromptInline string `json:"prompt_inline,omitempty"`
+}
+
+// AIOpsOperation matches aiops.Operation in the tidy worker.
+type AIOpsOperation struct {
+	Type    string `json:"type"`
+	Path    string `json:"path,omitempty"`
+	From    string `json:"from,omitempty"`
+	To      string `json:"to,omitempty"`
+	Content string `json:"content,omitempty"`
+	Reason  string `json:"reason,omitempty"`
+	Before  string `json:"before,omitempty"`
+	Summary string `json:"summary,omitempty"`
+	Issues  []any  `json:"issues,omitempty"`
+}
+
+type AIOpsResponse struct {
+	Action     string           `json:"action"`
+	Summary    string           `json:"summary"`
+	Operations []AIOpsOperation `json:"operations"`
+}
+
+func (c *TidyClient) RunAIOps(ctx context.Context, req AIOpsRequest) (*AIOpsResponse, error) {
+	body, _ := json.Marshal(req)
+	r, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/ai-action", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	r.Header.Set("Content-Type", "application/json")
+	hc := &http.Client{Timeout: 10 * time.Minute}
+	resp, err := hc.Do(r)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("ai-action: %s: %s", resp.Status, string(b))
+	}
+	var out AIOpsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *TidyClient) ApplyAIOps(ctx context.Context, resp AIOpsResponse) error {
+	body, _ := json.Marshal(resp)
+	r, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/ai-action/apply", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	r.Header.Set("Content-Type", "application/json")
+	hc := &http.Client{Timeout: 5 * time.Minute}
+	httpResp, err := hc.Do(r)
+	if err != nil {
+		return err
+	}
+	defer httpResp.Body.Close()
+	if httpResp.StatusCode != 200 {
+		b, _ := io.ReadAll(httpResp.Body)
+		return fmt.Errorf("apply: %s: %s", httpResp.Status, string(b))
+	}
+	return nil
+}
