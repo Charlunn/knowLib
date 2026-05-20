@@ -8,13 +8,13 @@ WORKDIR /app
 RUN corepack enable && corepack prepare pnpm@9.12.3 --activate
 
 COPY package.json ./
-# Lockfile may not exist in initial commits; fall back to fresh install if missing.
+# Lockfile may not exist or may be out of date with package.json (we add deps
+# directly without running pnpm install locally). Try frozen first; on failure
+# fall back to a fresh resolve. This keeps reproducible builds when possible
+# but doesn't block deployments when only package.json changed.
 COPY pnpm-lock.yaml* ./
-RUN if [ -f pnpm-lock.yaml ]; then \
-      pnpm install --frozen-lockfile; \
-    else \
-      pnpm install --no-frozen-lockfile; \
-    fi
+RUN pnpm install --frozen-lockfile 2>/dev/null \
+    || pnpm install --no-frozen-lockfile
 
 # ── Stage 2: builder ────────────────────────────────────────────
 FROM node:20-alpine AS builder
