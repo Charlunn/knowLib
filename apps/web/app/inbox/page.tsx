@@ -22,7 +22,7 @@ export default function InboxPage(): JSX.Element {
     setLoading(true);
     try {
       const list = await api.inbox();
-      setItems(list);
+      setItems(Array.isArray(list) ? list : []);
     } catch (e) {
       if (e instanceof ApiError) {
         toast({ description: `加载失败: ${e.message}`, variant: 'destructive' });

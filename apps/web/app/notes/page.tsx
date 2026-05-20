@@ -95,7 +95,7 @@ function NotesBrowser(): JSX.Element {
     (async () => {
       try {
         const list = await api.list();
-        if (!cancelled) setNotes(list);
+        if (!cancelled) setNotes(Array.isArray(list) ? list : []);
       } catch (e) {
         if (!cancelled) setError(e instanceof ApiError ? e.message : '加载失败');
       } finally {

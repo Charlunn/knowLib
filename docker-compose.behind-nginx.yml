@@ -25,6 +25,7 @@ services:
     networks:
       - default
       - knowlib-shared  # 加入共享网络，让外部 nginx 能直接访问
+      - new-api-network # nginx 所在网络，让 nginx 能解析 knowlib-caddy-1
 
   couchdb:
     image: couchdb:3
@@ -151,3 +152,5 @@ networks:
   default:
   knowlib-shared:
     external: true   # 由 `docker network create knowlib-shared` 预先创建
+  new-api-network:
+    external: true   # nginx 所在网络（new-api 项目）

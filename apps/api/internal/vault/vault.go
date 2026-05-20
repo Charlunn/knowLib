@@ -149,8 +149,7 @@ func (v *Vault) ListSubtree(rel string) ([]Listing, error) {
 		return nil, err
 	}
 	var out []Listing
-	err = filepath.WalkDir(abs, func(p string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
+	err = filepath.WalkDir(abs, func(p string, d fs.DirEntry, walkErr error) error {		if walkErr != nil {
 			if errors.Is(walkErr, fs.ErrNotExist) && p == abs {
 				return nil // empty subtree is fine
 			}
@@ -184,6 +183,9 @@ func (v *Vault) ListSubtree(rel string) ([]Listing, error) {
 	})
 	if err != nil {
 		return nil, err
+	}
+	if out == nil {
+		out = []Listing{}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ModTime.After(out[j].ModTime) })
 	return out, nil

@@ -9,9 +9,6 @@
 :8080 {
 	encode zstd gzip
 
-	# 信任宿主 nginx 传入的 X-Forwarded-For / X-Forwarded-Proto
-	trusted_proxies private_ranges
-
 	# === Obsidian LiveSync (CouchDB) ===
 	handle_path /sync/* {
 		reverse_proxy couchdb:5984

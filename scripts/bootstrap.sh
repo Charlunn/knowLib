@@ -80,7 +80,7 @@ echo "==> TOTP enrollment"
 if grep -qE '^TOTP_SECRET=.+' "$ENV_FILE"; then
   echo "  TOTP_SECRET already set, skipping enrollment (delete the line in .env to regenerate)"
 else
-  TOTP_SECRET="$(rand 20 | tr 'a-z+/' 'A-Z23' | head -c 32)"
+  TOTP_SECRET="$(openssl rand 20 | base32 | tr -d '=')"
   awk -v v="$TOTP_SECRET" 'BEGIN{FS=OFS="="} $1=="TOTP_SECRET"{print "TOTP_SECRET="v; next} {print}' "$ENV_FILE" > "$ENV_FILE.tmp"
   mv "$ENV_FILE.tmp" "$ENV_FILE"
   OTP_URI="otpauth://totp/${TOTP_ISSUER:-knowLib}:${TOTP_ACCOUNT:-me}?secret=${TOTP_SECRET}&issuer=${TOTP_ISSUER:-knowLib}"
