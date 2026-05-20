@@ -66,12 +66,49 @@ type Overrides struct {
 }
 
 func NewEngine(cfg *config.Config) *Engine {
-	return &Engine{
+	e := &Engine{
 		Cfg:     cfg,
 		FS:      vaultfs.New(cfg.VaultPath, cfg.InboxDir, cfg.NotesDir, cfg.AtlasDir, cfg.KnowlibDir),
 		Retr:    retrieval.New(cfg.EmbedBaseURL, cfg.EmbedModel, cfg.QdrantURL, cfg.QdrantCollection),
 		LLM:     llm.New(cfg.OpenAIBaseURL, cfg.OpenAIAPIKey, cfg.OpenAIModel),
 		NowFunc: time.Now,
+	}
+	// Best-effort: ensure base topic entry files exist on first run.
+	// User can delete or rename them at any time.
+	e.ensureBaseTopics()
+	return e
+}
+
+// baseCategories is the bootstrap list of top-level topics. AI is told to
+// prefer these over inventing new ones. Users can edit notes/ directly to
+// add or remove topics; this only fills in missing ones.
+var baseCategories = []string{
+	"学习",
+	"编程",
+	"工作",
+	"阅读",
+	"生活",
+	"想法",
+	"项目",
+	"备忘",
+}
+
+// maxNotePathDepth caps how deeply a note can be nested under notes/.
+// notes/X.md = 1, notes/X/Y.md = 2, notes/X/Y/Z.md = 3. Anything past 3
+// gets clamped to a sensible parent during execution.
+const maxNotePathDepth = 3
+
+// ensureBaseTopics creates the topic entry stubs (notes/学习.md etc.) if
+// they don't exist. Each stub is a minimal index file the LLM can extend.
+func (e *Engine) ensureBaseTopics() {
+	for _, cat := range baseCategories {
+		entryPath := path.Join(e.Cfg.NotesDir, cat+".md")
+		if e.FS.Exists(entryPath) {
+			continue
+		}
+		stub := fmt.Sprintf("---\ntitle: %s\ncategory: %s\ntags: []\n---\n\n# %s\n\n本主题的入口页面,AI 自动维护。\n\n## 笔记列表\n\n",
+			cat, cat, cat)
+		_ = e.FS.WriteAtomic(entryPath, []byte(stub))
 	}
 }
 
@@ -234,6 +271,8 @@ func (e *Engine) runOne(ctx context.Context, srcPath string, rc *runtimeContext)
 		out.Reason = "no target_path or category/title in LLM output"
 		return out
 	}
+	// Enforce path depth limit. Drop intermediate dirs to stay <= max depth.
+	target = clampPathDepth(target, e.Cfg.NotesDir, maxNotePathDepth)
 	out.TargetPath = target
 	out.Action = parsed.Action
 
@@ -480,6 +519,34 @@ func safeFilename(s string) string {
 		s = "untitled"
 	}
 	return s
+}
+
+// clampPathDepth ensures `target` doesn't go more than `maxDepth` levels
+// under `notesDir`. If it does, the deepest directories collapse upward.
+//
+// Example with maxDepth=3:
+//
+//	notes/A/B/C/D/E.md  →  notes/A/B/E.md
+//	notes/A/B.md        →  unchanged (depth 2)
+//	notes/A/B/C.md      →  unchanged (depth 3)
+func clampPathDepth(target, notesDir string, maxDepth int) string {
+	target = strings.ReplaceAll(target, `\`, "/")
+	notesDir = strings.Trim(notesDir, "/")
+	prefix := notesDir + "/"
+	if !strings.HasPrefix(target, prefix) {
+		return target
+	}
+	rest := strings.TrimPrefix(target, prefix)
+	parts := strings.Split(rest, "/")
+	// parts := ["A", "B", "C", "D", "E.md"] for the example above.
+	// depth = len(parts). We want depth <= maxDepth.
+	if len(parts) <= maxDepth {
+		return target
+	}
+	// Keep the first (maxDepth-1) directories and the final filename;
+	// the middle slice is dropped.
+	keep := append(parts[:maxDepth-1], parts[len(parts)-1])
+	return prefix + strings.Join(keep, "/")
 }
 
 type slimHit struct {

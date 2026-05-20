@@ -1,45 +1,24 @@
-# knowLib 初始分类模板
-# bootstrap.sh 会在 data/vault/notes/ 下创建这些主题入口文件
-# 用户可以随时在 Web 设置页或直接编辑文件来增删分类
+# knowLib 基础分类配置
+#
+# 启动时 tidy 会检查 notes/ 下是否存在这些主题入口文件,
+# 不存在就自动创建。AI 整理时会优先把笔记放进这些已有分类,
+# 只有当内容确实不属于任何已有分类时,才允许新建分类。
+#
+# 用户可以编辑这个文件增删分类,但建议保持精简(8-10 个顶级分类)。
 
+# 顶级分类列表。每个会成为 notes/<name>.md 主题入口文件。
 categories:
-  - name: 学习
-    description: 课程、教材、自学内容
-    subcategories:
-      - 高等数学
-      - 线性代数
-      - 概率统计
-      - 物理
-      - 英语
+  - 学习
+  - 编程
+  - 工作
+  - 阅读
+  - 生活
+  - 想法
+  - 项目
+  - 备忘
 
-  - name: 编程
-    description: 编程语言、框架、工具
-    subcategories:
-      - Python
-      - Go
-      - JavaScript
-      - 数据库
-      - DevOps
-
-  - name: 工作
-    description: 项目、会议、任务
-    subcategories:
-      - 项目笔记
-      - 会议记录
-
-  - name: 阅读
-    description: 书籍、文章、论文摘要
-    subcategories:
-      - 书摘
-      - 文章
-
-  - name: 生活
-    description: 日常、健康、理财
-    subcategories:
-      - 日常
-      - 健康
-      - 理财
-
-  - name: 想法
-    description: 灵感、思考、反思
-    subcategories: []
+# 路径深度上限。
+# notes/<分类>/<子笔记>.md     ← 2 级,允许
+# notes/<分类>/<子目录>/xxx.md ← 3 级,允许
+# 超过 3 级 → 拒绝
+max_depth: 3

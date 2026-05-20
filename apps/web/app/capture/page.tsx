@@ -106,14 +106,14 @@ export default function CapturePage(): JSX.Element {
   };
 
   return (
-    <div className="mx-auto flex min-h-[calc(100vh-3rem)] max-w-3xl flex-col gap-3 p-4">
+    <div className="mx-auto flex max-w-3xl flex-col gap-3 p-4">
       <Textarea
         ref={ref}
         value={content}
         onChange={(e) => setContent(e.target.value)}
         onKeyDown={onKeyDown}
         placeholder="随手记一笔…  (Ctrl/⌘+Enter 保存)"
-        className="min-h-[40vh] flex-1 resize-none border-none bg-transparent text-base shadow-none focus-visible:ring-0"
+        className="min-h-[50vh] flex-1 resize-none border-none bg-transparent text-base shadow-none focus-visible:ring-0"
         autoFocus
         spellCheck={false}
       />

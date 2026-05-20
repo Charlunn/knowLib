@@ -19,7 +19,8 @@ export function Nav(): JSX.Element {
   const [loggingOut, setLoggingOut] = React.useState(false);
 
   // Hide chrome on /capture for that anti-friction notepad feel.
-  if (pathname === '/capture') return <></>;
+  // 注：用户反馈用起来麻烦，改为始终显示导航栏。
+  // if (pathname === '/capture') return <></>;
 
   const onLogout = async () => {
     if (loggingOut) return;
