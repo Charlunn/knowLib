@@ -19,6 +19,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# 兼容 docker compose (v2 插件) 和 docker-compose (v1 独立二进制)
+if docker compose version >/dev/null 2>&1; then
+  DC="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+  DC="docker-compose"
+else
+  echo "ERROR: neither 'docker compose' nor 'docker-compose' found" >&2
+  exit 1
+fi
+
 ENV_FILE="$ROOT/.env"
 if [[ ! -f "$ENV_FILE" ]]; then
   echo "missing .env — run 'cp .env.example .env' and fill DOMAIN + OPENAI_API_KEY first" >&2
@@ -132,13 +142,13 @@ else
 fi
 
 echo "==> Starting docker compose (this may take a while on first run)"
-docker compose -f "$COMPOSE_FILE" up -d
+$DC -f "$COMPOSE_FILE" up -d
 
 echo
 echo "==> Waiting for CouchDB..."
 for i in {1..60}; do
   if curl -sf "http://localhost:5984" >/dev/null 2>&1 || \
-     docker compose -f "$COMPOSE_FILE" exec -T couchdb curl -sf http://localhost:5984 >/dev/null 2>&1; then
+     $DC -f "$COMPOSE_FILE" exec -T couchdb curl -sf http://localhost:5984 >/dev/null 2>&1; then
     break
   fi
   sleep 2
@@ -149,7 +159,7 @@ COUCH_AUTH="${COUCHDB_USER}:$(grep -E '^COUCHDB_PASSWORD=' "$ENV_FILE" | cut -d=
 COUCH_URL_INTERNAL="http://${COUCH_AUTH}@couchdb:5984"
 
 # create system dbs (idempotent), main db, obsidian user
-docker compose -f "$COMPOSE_FILE" exec -T couchdb bash -lc "
+$DC -f "$COMPOSE_FILE" exec -T couchdb bash -lc "
   set -e
   for db in _users _replicator _global_changes ${COUCHDB_DB:-obsidian-vault}; do
     curl -sf -X PUT '${COUCH_URL_INTERNAL}/'\$db || true

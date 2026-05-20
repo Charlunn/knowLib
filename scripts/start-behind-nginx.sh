@@ -15,8 +15,18 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# 兼容 docker compose (v2 插件) 和 docker-compose (v1 独立二进制)
+if docker compose version >/dev/null 2>&1; then
+  DC="docker compose"
+elif command -v docker-compose >/dev/null 2>&1; then
+  DC="docker-compose"
+else
+  echo "ERROR: neither 'docker compose' nor 'docker-compose' found" >&2
+  exit 1
+fi
+
 CMD="${1:-up}"
-COMPOSE="docker compose -f docker-compose.behind-nginx.yml"
+COMPOSE="$DC -f docker-compose.behind-nginx.yml"
 
 case "$CMD" in
   up)
