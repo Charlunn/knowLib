@@ -142,6 +142,46 @@ func (f *FS) Remove(rel string) error {
 	return nil
 }
 
+// RemoveEmptyDirs removes empty directories under `rel` up to (but not
+// including) `stopAt`. Used to clean up inbox sub-folders after all files
+// inside have been tidied.
+//
+// Example: RemoveEmptyDirs("inbox/notion/math", "inbox") removes
+// "inbox/notion/math" and "inbox/notion" if they become empty, but never
+// removes "inbox" itself.
+func (f *FS) RemoveEmptyDirs(rel, stopAt string) error {
+	stopAbs, err := f.Resolve(stopAt)
+	if err != nil {
+		return err
+	}
+	cur := rel
+	for {
+		if cur == stopAt || cur == "." || cur == "" {
+			break
+		}
+		abs, err := f.Resolve(cur)
+		if err != nil {
+			break
+		}
+		// Don't go above the stop boundary.
+		if abs == stopAbs {
+			break
+		}
+		entries, err := os.ReadDir(abs)
+		if err != nil {
+			break
+		}
+		if len(entries) > 0 {
+			break // not empty, stop climbing
+		}
+		if err := os.Remove(abs); err != nil {
+			break
+		}
+		cur = filepath.ToSlash(filepath.Dir(cur))
+	}
+	return nil
+}
+
 // AppendLog appends a single line (with newline) to .knowlib/<name>.
 func (f *FS) AppendLog(name, line string) error {
 	rel := f.KnowlibDir + "/" + name

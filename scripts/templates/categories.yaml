@@ -1,0 +1,45 @@
+# knowLib 初始分类模板
+# bootstrap.sh 会在 data/vault/notes/ 下创建这些主题入口文件
+# 用户可以随时在 Web 设置页或直接编辑文件来增删分类
+
+categories:
+  - name: 学习
+    description: 课程、教材、自学内容
+    subcategories:
+      - 高等数学
+      - 线性代数
+      - 概率统计
+      - 物理
+      - 英语
+
+  - name: 编程
+    description: 编程语言、框架、工具
+    subcategories:
+      - Python
+      - Go
+      - JavaScript
+      - 数据库
+      - DevOps
+
+  - name: 工作
+    description: 项目、会议、任务
+    subcategories:
+      - 项目笔记
+      - 会议记录
+
+  - name: 阅读
+    description: 书籍、文章、论文摘要
+    subcategories:
+      - 书摘
+      - 文章
+
+  - name: 生活
+    description: 日常、健康、理财
+    subcategories:
+      - 日常
+      - 健康
+      - 理财
+
+  - name: 想法
+    description: 灵感、思考、反思
+    subcategories: []

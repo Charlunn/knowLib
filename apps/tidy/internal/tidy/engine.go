@@ -1,5 +1,11 @@
-// Package tidy is the orchestrator: read inbox file → retrieve context → call
-// LLM → safediff verify → write notes/.../<title>.md → maintain atlas/ → log.
+// Package tidy is the orchestrator that turns inbox files into structured
+// knowledge base entries. The v2 design supports three actions:
+//   - append: add the new content as a new section to an existing note
+//   - create: create a new sub-note under an existing topic directory
+//   - create_topic: create a new topic entry file plus a sub-note
+//
+// The LLM sees the existing notes/ tree before deciding, so it can route
+// related content into the same topic instead of fragmenting the vault.
 package tidy
 
 import (
@@ -7,25 +13,26 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/charlunn/knowlib/tidy/internal/atlas"
 	"github.com/charlunn/knowlib/tidy/internal/config"
 	"github.com/charlunn/knowlib/tidy/internal/fmatter"
 	"github.com/charlunn/knowlib/tidy/internal/llm"
 	"github.com/charlunn/knowlib/tidy/internal/retrieval"
-	"github.com/charlunn/knowlib/tidy/internal/safediff"
 	"github.com/charlunn/knowlib/tidy/internal/vaultfs"
 )
 
 type Item struct {
 	SourcePath string `json:"source_path"`
 	TargetPath string `json:"target_path,omitempty"`
+	Action     string `json:"action,omitempty"`
 	Status     string `json:"status"` // ok | partial | failed
 	Reason     string `json:"reason,omitempty"`
 }
@@ -68,7 +75,8 @@ func NewEngine(cfg *config.Config) *Engine {
 	}
 }
 
-// runtimeContext bundles the values that may be overridden per-request.
+// runtimeContext bundles per-request settings (LLM/embed clients can be
+// rebuilt when the api forwards user-changed settings as overrides).
 type runtimeContext struct {
 	llm        *llm.Client
 	retr       *retrieval.Client
@@ -89,7 +97,6 @@ func (e *Engine) buildRuntimeContext(o *Overrides) *runtimeContext {
 	if o == nil {
 		return rc
 	}
-	// Only construct new clients when the override actually differs from defaults.
 	if (o.LLMBaseURL != "" && o.LLMBaseURL != e.Cfg.OpenAIBaseURL) ||
 		(o.LLMAPIKey != "" && o.LLMAPIKey != e.Cfg.OpenAIAPIKey) ||
 		(o.LLMModel != "" && o.LLMModel != e.Cfg.OpenAIModel) {
@@ -129,7 +136,7 @@ func pick(a, b string) string {
 	return b
 }
 
-// Run executes a tidy job. If req.All is true, runs over every inbox/ file.
+// Run executes a tidy job. If `all` is true, runs over every inbox/ file.
 // Items are processed with bounded concurrency so a "tidy all" over a large
 // inbox doesn't take wall-clock time proportional to file count × LLM latency.
 func (e *Engine) Run(ctx context.Context, paths []string, all bool, overrides *Overrides) (*Result, error) {
@@ -143,10 +150,6 @@ func (e *Engine) Run(ctx context.Context, paths []string, all bool, overrides *O
 	rc := e.buildRuntimeContext(overrides)
 	job := &Result{JobID: fmt.Sprintf("tidy-%d", e.NowFunc().Unix())}
 
-	// Bounded concurrency. The LLM is the bottleneck; 3 in-flight requests is
-	// a safe default that respects most provider rate limits without leaving
-	// the user staring at a serial queue. Single-item jobs skip the goroutines
-	// entirely so we don't pay the orchestration cost for the common case.
 	if len(paths) <= 1 {
 		for _, p := range paths {
 			job.Items = append(job.Items, e.runOne(ctx, p, rc))
@@ -177,8 +180,7 @@ func (e *Engine) Run(ctx context.Context, paths []string, all bool, overrides *O
 	return job, nil
 }
 
-// runOne handles a single inbox file. Failure of the LLM or safediff causes
-// us to leave the inbox file in place — the user can retry later.
+// runOne handles a single inbox file. The LLM decides the action; we execute it.
 func (e *Engine) runOne(ctx context.Context, srcPath string, rc *runtimeContext) Item {
 	out := Item{SourcePath: srcPath, Status: "failed"}
 
@@ -189,95 +191,212 @@ func (e *Engine) runOne(ctx context.Context, srcPath string, rc *runtimeContext)
 	}
 	srcFM, body := fmatter.Parse(string(raw))
 
-	// 1. retrieve top-K related notes (best-effort: empty list on failure)
+	// 1. Vector retrieve top-K related notes (provides semantic context).
 	hits, _ := rc.retr.Search(ctx, body, rc.topK)
 	relatedJSON, _ := json.MarshalIndent(simplifyHits(hits), "", "  ")
 
-	// 2. load prompt: inline override > vault file > bundled default
+	// 2. Scan the existing notes/ tree so the LLM can route into existing
+	//    topics instead of fragmenting the vault into one-file directories.
+	existingTree := e.scanNotesTree()
+
+	// 3. Load prompt: inline override > vault file > bundled default.
 	prompt, err := e.loadPrompt(rc.promptText)
 	if err != nil {
 		out.Reason = "prompt: " + err.Error()
 		return out
 	}
 
-	// 3. ask LLM
+	// 4. Ask the LLM.
 	user := fmt.Sprintf(
-		"=== 原文(inbox 文件内容)===\n%s\n\n=== 相关笔记列表 ===\n%s\n",
-		body,
+		"=== 现有笔记目录结构 ===\n%s\n\n=== 相关笔记列表(向量检索) ===\n%s\n\n=== 原文(inbox 文件内容) ===\n%s\n",
+		existingTree,
 		string(relatedJSON),
+		body,
 	)
 	rawResp, err := rc.llm.Chat(ctx, prompt, user, rc.maxTokens)
 	if err != nil {
 		out.Reason = "llm: " + err.Error()
 		return out
 	}
-	parsed, err := parseLLMJSON(rawResp)
+	parsed, err := parseLLMOutput(rawResp)
 	if err != nil {
 		out.Reason = "parse: " + err.Error()
 		return out
 	}
 
-	// 4. safediff: verify body_with_links is wikilink-only modifications
-	finalBody, diffErr := safediff.CheckBodyWithLinks(body, parsed.BodyWithLinks)
-	bodyToWrite := finalBody
-	bodyAccepted := diffErr == nil
-	if !bodyAccepted {
-		// Fall back to original body verbatim — frontmatter only.
-		bodyToWrite = body
-	}
-
-	// 5. compose target path + frontmatter
-	target := e.composeTargetPath(parsed)
-	if target == "" {
-		out.Reason = "no category/title in LLM output"
-		return out
-	}
+	// 5. Execute the action.
 	now := e.NowFunc().UTC().Format(time.RFC3339)
-	keys := []string{"title", "category", "tags", "aliases", "related", "prereq", "postreq",
-		"created", "tidied", "tidied_by", "source_path"}
-	fm := map[string]any{
-		"title":       parsed.Title,
-		"category":    parsed.Category,
-		"tags":        parsed.Tags,
-		"aliases":     parsed.Aliases,
-		"related":     parsed.Related,
-		"prereq":      parsed.Prereq,
-		"postreq":     parsed.Postreq,
-		"created":     defaultStr(srcFM["captured_at"], now),
-		"tidied":      now,
-		"tidied_by":   rc.model,
-		"source_path": srcPath,
+	target := parsed.TargetPath
+	if target == "" {
+		target = e.composeTargetPath(parsed)
 	}
-	rendered := fmatter.Render(keys, fm, bodyToWrite)
+	if target == "" {
+		out.Reason = "no target_path or category/title in LLM output"
+		return out
+	}
+	out.TargetPath = target
+	out.Action = parsed.Action
 
-	// 6. write target file
-	if err := e.FS.WriteAtomic(target, []byte(rendered)); err != nil {
-		out.Reason = "write: " + err.Error()
+	switch parsed.Action {
+	case "append":
+		if err := e.doAppend(target, parsed.Body, parsed.Title); err != nil {
+			// Target missing — fall through to create.
+			if errors.Is(err, vaultfs.ErrNotFound) {
+				parsed.Action = "create"
+			} else {
+				out.Reason = "append: " + err.Error()
+				return out
+			}
+		}
+		if parsed.Action == "append" {
+			break // success
+		}
+		fallthrough
+
+	case "create", "create_topic", "":
+		if parsed.Action == "" {
+			parsed.Action = "create"
+			out.Action = "create"
+		}
+		if err := e.doCreate(target, parsed, srcFM, now); err != nil {
+			out.Reason = "create: " + err.Error()
+			return out
+		}
+		// For create_topic, also write the index file (if not already created)
+		// before applying the optional cross-reference index_update.
+		if parsed.Action == "create_topic" {
+			indexPath := path.Join(e.Cfg.NotesDir, safeFilename(parsed.Category)+".md")
+			if !e.FS.Exists(indexPath) {
+				stub := fmt.Sprintf("# %s\n\n本主题的入口文件,AI 自动维护。\n\n## 笔记列表\n\n", parsed.Category)
+				_ = e.FS.WriteAtomic(indexPath, []byte(stub))
+			}
+		}
+
+	default:
+		out.Reason = "unknown action: " + parsed.Action
 		return out
 	}
 
-	// 7. update atlas (best-effort; do not fail the whole tidy)
-	_, _ = atlas.Apply(e.FS, parsed.MOCUpdates)
+	// 6. Apply the optional index_update (link from topic page to this note).
+	if parsed.IndexUpdate.Path != "" && parsed.IndexUpdate.AddEntry != "" {
+		e.applyIndexUpdate(parsed)
+	}
 
-	// 8. delete inbox source
+	// 7. Delete the inbox source and clean up empty parent directories.
 	_ = e.FS.Remove(srcPath)
+	_ = e.FS.RemoveEmptyDirs(filepath.Dir(srcPath), e.FS.InboxDir)
 
-	// 9. log
+	// 8. Log.
 	_ = e.FS.AppendLog("tidy.log", fmt.Sprintf(
-		"%s -> %s (model=%s, body_accepted=%t)",
-		srcPath, target, rc.model, bodyAccepted,
+		"%s -> %s (action=%s, model=%s)",
+		srcPath, target, parsed.Action, rc.model,
 	))
 
-	out.TargetPath = target
-	if bodyAccepted {
-		out.Status = "ok"
-	} else {
-		out.Status = "partial"
-		out.Reason = "body_with_links rejected by safediff: " + diffErr.Error()
-	}
+	out.Status = "ok"
 	return out
 }
 
+// doAppend appends content as a new section under an existing note. The new
+// content is wrapped in a "## <heading>" block (or the LLM's body verbatim if
+// it already starts with a heading).
+func (e *Engine) doAppend(target, body, sectionTitle string) error {
+	existing, err := e.FS.Read(target)
+	if err != nil {
+		return err
+	}
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return fmt.Errorf("empty append body")
+	}
+	// Wrap in "## title" if the body doesn't already start with a heading.
+	prefix := ""
+	if !strings.HasPrefix(body, "#") && sectionTitle != "" {
+		prefix = "## " + sectionTitle + "\n\n"
+	}
+	merged := strings.TrimRight(string(existing), "\n") + "\n\n" + prefix + body + "\n"
+	// Update `updated` timestamp in frontmatter if present.
+	merged = bumpUpdatedTimestamp(merged, e.NowFunc().UTC().Format(time.RFC3339))
+	return e.FS.WriteAtomic(target, []byte(merged))
+}
+
+// doCreate writes a new note with full frontmatter.
+func (e *Engine) doCreate(target string, parsed *llmOutputV2, srcFM map[string]string, now string) error {
+	keys := []string{"title", "category", "tags", "related", "created", "updated"}
+	fm := map[string]any{
+		"title":    parsed.Title,
+		"category": parsed.Category,
+		"tags":     parsed.Tags,
+		"related":  parsed.Related,
+		"created":  defaultStr(srcFM["captured_at"], now),
+		"updated":  now,
+	}
+	rendered := fmatter.Render(keys, fm, parsed.Body)
+	return e.FS.WriteAtomic(target, []byte(rendered))
+}
+
+// applyIndexUpdate adds a bullet entry to a topic's index file.
+func (e *Engine) applyIndexUpdate(parsed *llmOutputV2) {
+	indexPath := parsed.IndexUpdate.Path
+	entry := strings.TrimRight(parsed.IndexUpdate.AddEntry, "\n")
+	if entry == "" {
+		return
+	}
+
+	existing, err := e.FS.Read(indexPath)
+	if err != nil {
+		// Index file doesn't exist — create it with the entry.
+		content := fmt.Sprintf("# %s\n\n## 笔记列表\n\n%s\n", parsed.Category, entry)
+		_ = e.FS.WriteAtomic(indexPath, []byte(content))
+		return
+	}
+	if strings.Contains(string(existing), entry) {
+		return // already present
+	}
+	updated := strings.TrimRight(string(existing), "\n") + "\n" + entry + "\n"
+	_ = e.FS.WriteAtomic(indexPath, []byte(updated))
+}
+
+// scanNotesTree returns a compact text representation of the existing notes/
+// directory structure for the LLM to reference when making classification
+// decisions. Output stays small — we only emit names, not full paths.
+func (e *Engine) scanNotesTree() string {
+	abs, err := e.FS.Resolve(e.Cfg.NotesDir)
+	if err != nil {
+		return "(empty)"
+	}
+	var lines []string
+	_ = filepath.WalkDir(abs, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return nil
+		}
+		rel, err := filepath.Rel(abs, p)
+		if err != nil || rel == "." {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		base := filepath.Base(rel)
+		if strings.HasPrefix(base, ".") {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		depth := strings.Count(rel, "/")
+		indent := strings.Repeat("  ", depth)
+		if d.IsDir() {
+			lines = append(lines, indent+base+"/")
+		} else if strings.HasSuffix(base, ".md") {
+			lines = append(lines, indent+base)
+		}
+		return nil
+	})
+	if len(lines) == 0 {
+		return "(empty — 还没有笔记,你可以新建主题入口)"
+	}
+	return "notes/\n" + strings.Join(lines, "\n")
+}
+
+// loadPrompt: inline override > vault file > bundled default.
 func (e *Engine) loadPrompt(inline string) (string, error) {
 	if inline != "" {
 		return inline, nil
@@ -291,52 +410,38 @@ func (e *Engine) loadPrompt(inline string) (string, error) {
 			return "", err
 		}
 	}
-	// Bundled fallback: keep the worker functional even if the user wiped the
-	// prompt file. Should match scripts/templates/prompts/tidy.md spiritually.
 	return defaultPrompt, nil
 }
 
-const defaultPrompt = `你是 knowLib 的整理助手。用户随手记的笔记进 inbox/,你负责归类、加 frontmatter、加 wikilinks,并维护知识图谱。
+// === LLM I/O ==================================================================
 
-严格约束:
-1. 不要修改用户原文的任何实质内容。只能在原词上包裹 [[wikilink]],不能改字、不能删句、不能换标点。代码会做 diff 校验,改了就拒绝。
-2. wikilink 只在第一次出现时添加,同一术语重复出现只对第一次加。
-3. 不编造前置/后置/相关笔记 —— 只能从给定的相关笔记列表里选。
-4. category 用斜杠分隔(如 "学习/高等数学/微分方程"),不超过 4 层。
-5. title 简洁明确,不超过 30 字。
-6. 回复必须是合法 JSON,无前导/尾随说明文字。
-
-输出 JSON 字段:title, category, tags, aliases, related, prereq, postreq, body_with_links, moc_updates。
-related/prereq/postreq 用 wikilink 形式,如 "[[导数与微分]]"。
-moc_updates 形如:[{"path": "atlas/高等数学.md", "section": "微分方程", "add_link": "[[一阶线性微分方程]]"}]。
-`
-
-// === LLM JSON parsing =========================================================
-
-type llmOutput struct {
-	Title         string         `json:"title"`
-	Category      string         `json:"category"`
-	Tags          []string       `json:"tags"`
-	Aliases       []string       `json:"aliases"`
-	Related       []string       `json:"related"`
-	Prereq        []string       `json:"prereq"`
-	Postreq       []string       `json:"postreq"`
-	BodyWithLinks string         `json:"body_with_links"`
-	MOCUpdates    []atlas.Update `json:"moc_updates"`
+// llmOutputV2 mirrors the JSON the prompt asks the LLM to produce.
+type llmOutputV2 struct {
+	Action      string      `json:"action"` // "append" | "create" | "create_topic"
+	TargetPath  string      `json:"target_path"`
+	Title       string      `json:"title"`
+	Category    string      `json:"category"`
+	Tags        []string    `json:"tags"`
+	Related     []string    `json:"related"`
+	Body        string      `json:"body"`
+	IndexUpdate IndexUpdate `json:"index_update"`
 }
 
-// parseLLMJSON tolerates LLMs that wrap their JSON in ```json fences or add
-// preamble like "Here's the result:". We extract the first {...} block.
+type IndexUpdate struct {
+	Path     string `json:"path"`
+	AddEntry string `json:"add_entry"`
+}
+
 var jsonBlockRe = regexp.MustCompile(`(?s)\{.*\}`)
 
-func parseLLMJSON(raw string) (*llmOutput, error) {
+// parseLLMOutput tolerates LLMs that wrap their JSON in ```json fences or
+// add a preamble like "Here's the result:".
+func parseLLMOutput(raw string) (*llmOutputV2, error) {
 	raw = strings.TrimSpace(raw)
-	// Try direct parse first.
-	var out llmOutput
+	var out llmOutputV2
 	if err := json.Unmarshal([]byte(raw), &out); err == nil {
 		return &out, nil
 	}
-	// Fallback: pull out first JSON object.
 	m := jsonBlockRe.FindString(raw)
 	if m == "" {
 		return nil, fmt.Errorf("no json object found")
@@ -349,18 +454,22 @@ func parseLLMJSON(raw string) (*llmOutput, error) {
 
 // === helpers ==================================================================
 
-func (e *Engine) composeTargetPath(p *llmOutput) string {
-	if p.Title == "" || p.Category == "" {
+// composeTargetPath builds notes/<category>/<title>.md when the LLM didn't
+// give us an explicit target_path. category may be slash-separated.
+func (e *Engine) composeTargetPath(p *llmOutputV2) string {
+	if p.Title == "" {
 		return ""
 	}
 	cat := strings.Trim(p.Category, "/")
 	title := safeFilename(p.Title)
+	if cat == "" {
+		return path.Join(e.Cfg.NotesDir, title+".md")
+	}
 	return path.Join(e.Cfg.NotesDir, cat, title+".md")
 }
 
-// safeFilename strips characters that fail on common filesystems (Windows
-// especially). Keeps Chinese characters as-is — they're valid on every modern
-// FS we'll deploy on.
+// safeFilename strips characters that fail on common filesystems. Chinese
+// characters are kept as-is.
 func safeFilename(s string) string {
 	bad := []string{`\`, `/`, `:`, `*`, `?`, `"`, `<`, `>`, `|`, "\x00"}
 	for _, c := range bad {
@@ -394,3 +503,63 @@ func defaultStr(v string, def string) string {
 	}
 	return v
 }
+
+// bumpUpdatedTimestamp updates the `updated:` field in YAML frontmatter, or
+// adds it if missing. If the file has no frontmatter, returns it unchanged.
+func bumpUpdatedTimestamp(content, ts string) string {
+	if !strings.HasPrefix(content, "---\n") {
+		return content
+	}
+	rest := content[4:]
+	end := strings.Index(rest, "\n---\n")
+	if end < 0 {
+		return content
+	}
+	header := rest[:end]
+	body := rest[end+5:]
+
+	updatedRe := regexp.MustCompile(`(?m)^updated:.*$`)
+	if updatedRe.MatchString(header) {
+		header = updatedRe.ReplaceAllString(header, "updated: "+ts)
+	} else {
+		header = strings.TrimRight(header, "\n") + "\nupdated: " + ts
+	}
+	return "---\n" + header + "\n---\n" + body
+}
+
+// defaultPrompt is the bundled fallback when the user has no vault prompt
+// file. It mirrors scripts/templates/prompts/tidy.md (kept short here; the
+// full version lives in the vault and is user-editable).
+const defaultPrompt = `你是 knowLib 的知识整理助手。把零散笔记整理成结构化的知识库。
+
+## 决策优先级
+1. 看「现有笔记目录结构」,判断新内容是否属于已有主题
+2. 优先 append 到已有笔记;只在内容独立且有深度时 create;尽量不 create_topic
+3. 同主题的多个知识点应该合并到一篇笔记的不同章节,而不是每个一篇
+
+## 目录结构规则
+- notes/<主题>.md          ← 主题入口(索引页)
+- notes/<主题>/<子笔记>.md  ← 详细笔记
+- 最多 2 层
+
+## 笔记格式
+- frontmatter: title, category, tags, related, created, updated
+- H1 是笔记标题(只有一个)
+- H2 是主要章节
+- H3 是子章节
+- 不用 H4 及以下
+
+## 输出 JSON
+{
+  "action": "append" | "create" | "create_topic",
+  "target_path": "notes/.../xxx.md",
+  "title": "...",
+  "category": "...",
+  "tags": [...],
+  "related": ["[[...]]"],
+  "body": "整理后的 markdown 内容",
+  "index_update": {"path": "notes/<主题>.md", "add_entry": "- [[子笔记]] — 描述"}
+}
+
+严格约束:回复必须是合法 JSON,不编造内容,保持用户原意。
+`
