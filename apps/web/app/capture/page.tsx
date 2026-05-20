@@ -7,6 +7,7 @@ import { api, ApiError } from '@/lib/api';
 import { enqueueCapture, flushQueue, listRecent, type QueuedCapture } from '@/lib/idb';
 import { toast } from '@/components/ui/toaster';
 import { cn } from '@/lib/utils';
+import { MarkdownView } from '@/components/markdown-view';
 
 // /capture is the PWA start_url. Anti-friction: textarea autofocuses, no chrome.
 // Cmd/Ctrl+Enter submits. Offline writes queue in IndexedDB and flush on reconnect.
@@ -17,6 +18,7 @@ export default function CapturePage(): JSX.Element {
   const [recent, setRecent] = React.useState<QueuedCapture[]>([]);
   const [online, setOnline] = React.useState(true);
   const [pending, setPending] = React.useState(0);
+  const [previewMode, setPreviewMode] = React.useState(false);
 
   const refreshRecent = React.useCallback(async () => {
     try {
@@ -103,20 +105,34 @@ export default function CapturePage(): JSX.Element {
       e.preventDefault();
       void submit();
     }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'p') {
+      e.preventDefault();
+      setPreviewMode((v) => !v);
+    }
   };
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-3 p-4">
-      <Textarea
-        ref={ref}
-        value={content}
-        onChange={(e) => setContent(e.target.value)}
-        onKeyDown={onKeyDown}
-        placeholder="随手记一笔…  (Ctrl/⌘+Enter 保存)"
-        className="min-h-[50vh] flex-1 resize-none border-none bg-transparent text-base shadow-none focus-visible:ring-0"
-        autoFocus
-        spellCheck={false}
-      />
+      {previewMode ? (
+        <div className="min-h-[50vh] rounded border bg-muted/20 p-4">
+          {content.trim() ? (
+            <MarkdownView content={content} />
+          ) : (
+            <p className="text-sm text-muted-foreground">(预览为空)</p>
+          )}
+        </div>
+      ) : (
+        <Textarea
+          ref={ref}
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          onKeyDown={onKeyDown}
+          placeholder="随手记一笔…  支持 Markdown 语法 (Ctrl/⌘+Enter 保存, Ctrl/⌘+P 切换预览)"
+          className="min-h-[50vh] flex-1 resize-none border-none bg-transparent text-base shadow-none focus-visible:ring-0"
+          autoFocus
+          spellCheck={false}
+        />
+      )}
       <div className="flex items-center justify-between text-xs text-muted-foreground">
         <div className="flex items-center gap-2">
           <span
@@ -129,9 +145,19 @@ export default function CapturePage(): JSX.Element {
           <span>{online ? '在线' : '离线'}</span>
           {pending > 0 ? <span>· 待同步 {pending}</span> : null}
         </div>
-        <Button onClick={submit} disabled={busy || !content.trim()} size="sm">
-          {busy ? '保存中…' : '保存'}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => setPreviewMode((v) => !v)}
+            className="text-xs"
+          >
+            {previewMode ? '编辑' : '预览'}
+          </Button>
+          <Button onClick={submit} disabled={busy || !content.trim()} size="sm">
+            {busy ? '保存中…' : '保存'}
+          </Button>
+        </div>
       </div>
       {recent.length > 0 ? (
         <div className="mt-2 space-y-1 text-sm">

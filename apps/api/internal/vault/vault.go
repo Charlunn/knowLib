@@ -174,10 +174,11 @@ func (v *Vault) ListSubtree(rel string) ([]Listing, error) {
 			return err
 		}
 		out = append(out, Listing{
-			Path:    rp,
-			Title:   strings.TrimSuffix(d.Name(), ".md"),
-			Size:    info.Size(),
-			ModTime: info.ModTime(),
+			Path:     rp,
+			Title:    strings.TrimSuffix(d.Name(), ".md"),
+			Size:     info.Size(),
+			ModTime:  info.ModTime(),
+			Category: deriveCategoryFromPath(rp, rel),
 		})
 		return nil
 	})
@@ -189,6 +190,25 @@ func (v *Vault) ListSubtree(rel string) ([]Listing, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ModTime.After(out[j].ModTime) })
 	return out, nil
+}
+
+// deriveCategoryFromPath turns a vault-relative path into a category prefix.
+// Example: "notes/学习/微分方程.md" with base "notes" → "学习"
+//          "notes/学习/数学/代数.md" with base "notes" → "学习/数学"
+//          "notes/foo.md" with base "notes" → ""
+func deriveCategoryFromPath(rel, base string) string {
+	rel = filepath.ToSlash(rel)
+	base = filepath.ToSlash(base)
+	prefix := strings.Trim(base, "/") + "/"
+	if !strings.HasPrefix(rel, prefix) {
+		return ""
+	}
+	tail := strings.TrimPrefix(rel, prefix)
+	parts := strings.Split(tail, "/")
+	if len(parts) <= 1 {
+		return ""
+	}
+	return strings.Join(parts[:len(parts)-1], "/")
 }
 
 // Delete removes a file under the vault. Used to drop stale captures, etc.
