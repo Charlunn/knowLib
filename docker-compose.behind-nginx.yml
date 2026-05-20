@@ -142,4 +142,5 @@ networks:
   knowlib-shared:
     external: true
   new-api-network:
+    name: new-api_new-api-network
     external: true
