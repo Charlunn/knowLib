@@ -1,13 +1,16 @@
-# Caddy v2 — knowLib standalone 模式
-# 直接监听 80/443，自动从 Let's Encrypt 申请证书。
-# 需要 80/443 端口对外可达。
-# 使用方式: docker compose up -d  （或 scripts/start-standalone.sh）
+# Caddyfile.behind-nginx
+# 宿主 nginx 处理 TLS，转发明文到容器 8080。
+# Caddy 在此只做内部服务路由，不管证书。
+# 使用方式: scripts/start-behind-nginx.sh
 {
-	email admin@{$DOMAIN}
+	auto_https off
 }
 
-{$DOMAIN} {
+:8080 {
 	encode zstd gzip
+
+	# 信任宿主 nginx 传入的 X-Forwarded-For / X-Forwarded-Proto
+	trusted_proxies private_ranges
 
 	# === Obsidian LiveSync (CouchDB) ===
 	handle_path /sync/* {

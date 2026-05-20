@@ -115,15 +115,30 @@ fi
 # ensure ownership for non-root container users (best-effort, ignore on Windows)
 chmod -R 755 data/vault 2>/dev/null || true
 
+# ── 选择启动模式 ──────────────────────────────────────────────────────────────
+# 默认 standalone（Caddy 直接占 80/443）。
+# 如果 80 端口被占，自动切换到 behind-nginx 模式（Caddy 绑 127.0.0.1:8080）。
 echo
+if ss -tlnp 2>/dev/null | grep -q ':80 \|:80$' || lsof -i:80 >/dev/null 2>&1; then
+  MODE="behind-nginx"
+  COMPOSE_FILE="docker-compose.behind-nginx.yml"
+  echo "==> Port 80 is in use — starting in behind-nginx mode"
+  echo "    Caddy will listen on 127.0.0.1:8080 only."
+  echo "    See scripts/nginx/knowlib.conf for the nginx server block template."
+else
+  MODE="standalone"
+  COMPOSE_FILE="docker-compose.yml"
+  echo "==> Starting in standalone mode (Caddy handles 80/443 + auto HTTPS)"
+fi
+
 echo "==> Starting docker compose (this may take a while on first run)"
-docker compose up -d
+docker compose -f "$COMPOSE_FILE" up -d
 
 echo
 echo "==> Waiting for CouchDB..."
 for i in {1..60}; do
   if curl -sf "http://localhost:5984" >/dev/null 2>&1 || \
-     docker compose exec -T couchdb curl -sf http://localhost:5984 >/dev/null 2>&1; then
+     docker compose -f "$COMPOSE_FILE" exec -T couchdb curl -sf http://localhost:5984 >/dev/null 2>&1; then
     break
   fi
   sleep 2
@@ -134,7 +149,7 @@ COUCH_AUTH="${COUCHDB_USER}:$(grep -E '^COUCHDB_PASSWORD=' "$ENV_FILE" | cut -d=
 COUCH_URL_INTERNAL="http://${COUCH_AUTH}@couchdb:5984"
 
 # create system dbs (idempotent), main db, obsidian user
-docker compose exec -T couchdb bash -lc "
+docker compose -f "$COMPOSE_FILE" exec -T couchdb bash -lc "
   set -e
   for db in _users _replicator _global_changes ${COUCHDB_DB:-obsidian-vault}; do
     curl -sf -X PUT '${COUCH_URL_INTERNAL}/'\$db || true
@@ -159,14 +174,32 @@ docker compose exec -T couchdb bash -lc "
 "
 
 echo
-echo "==> Bootstrap complete"
+echo "==> Bootstrap complete (mode: $MODE)"
 echo
-echo "Next steps:"
-echo "  1. Open https://${DOMAIN}/login and enter your TOTP code."
-echo "  2. On every Obsidian device install 'Self-hosted LiveSync' plugin and configure:"
-echo "       URI:        https://${DOMAIN}/sync"
-echo "       Username:   ${COUCHDB_OBSIDIAN_USER:-obsidian}"
-echo "       Password:   $(grep -E '^COUCHDB_OBSIDIAN_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)"
-echo "       Database:   ${COUCHDB_DB:-obsidian-vault}"
-echo "       E2E pass:   <copy from your password manager>"
-echo "  3. Visit /settings on the web app to download your personal skill bundle."
+if [[ "$MODE" == "standalone" ]]; then
+  echo "Next steps:"
+  echo "  1. Open https://${DOMAIN}/login and enter your TOTP code."
+  echo "  2. On every Obsidian device install 'Self-hosted LiveSync' plugin and configure:"
+  echo "       URI:        https://${DOMAIN}/sync"
+  echo "       Username:   ${COUCHDB_OBSIDIAN_USER:-obsidian}"
+  echo "       Password:   $(grep -E '^COUCHDB_OBSIDIAN_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)"
+  echo "       Database:   ${COUCHDB_DB:-obsidian-vault}"
+  echo "       E2E pass:   <copy from your password manager>"
+  echo "  3. Visit /settings on the web app to download your personal skill bundle."
+else
+  echo "Next steps (behind-nginx mode):"
+  echo "  1. Install the nginx server block:"
+  echo "       sudo cp scripts/nginx/knowlib.conf /etc/nginx/conf.d/knowlib.conf"
+  echo "       sudo sed -i 's/YOUR_DOMAIN/${DOMAIN}/g' /etc/nginx/conf.d/knowlib.conf"
+  echo "       sudo nginx -t && sudo systemctl reload nginx"
+  echo "  2. Sign TLS certificate:"
+  echo "       sudo certbot --nginx -d ${DOMAIN}"
+  echo "  3. Open https://${DOMAIN}/login and enter your TOTP code."
+  echo "  4. On every Obsidian device install 'Self-hosted LiveSync' plugin and configure:"
+  echo "       URI:        https://${DOMAIN}/sync"
+  echo "       Username:   ${COUCHDB_OBSIDIAN_USER:-obsidian}"
+  echo "       Password:   $(grep -E '^COUCHDB_OBSIDIAN_PASSWORD=' "$ENV_FILE" | cut -d= -f2-)"
+  echo "       Database:   ${COUCHDB_DB:-obsidian-vault}"
+  echo "       E2E pass:   <copy from your password manager>"
+  echo "  5. Visit /settings on the web app to download your personal skill bundle."
+fi
