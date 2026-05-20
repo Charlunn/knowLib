@@ -1,13 +1,13 @@
 # docker-compose.behind-nginx.yml
-# 适用于宿主已�?nginx 占用 80/443 的情况�?
-# Caddy 退化为内部 HTTP 反代，仅绑定 127.0.0.1:8080�?
-# TLS 由宿�?nginx + certbot 负责�?
+# 适用于宿主已有 nginx 占用 80/443 的情况。
+# Caddy 退化为内部 HTTP 反代，仅绑定 127.0.0.1:8080。
+# TLS 由宿主 nginx + certbot 负责。
 #
-# 架构: nginx �?caddy �?{api, web, webdav}
-# 同步: Obsidian �?Remotely Save (WebDAV) �?data/vault/ �?knowLib services
+# 架构: nginx → caddy → {api, web, webdav}
+# 同步: Obsidian ← Remotely Save (WebDAV) → data/vault/ ← knowLib services
 #
 # 启动方式: scripts/start-behind-nginx.sh
-# 或手�?   docker compose -f docker-compose.behind-nginx.yml up -d
+# 或手动:   docker compose -f docker-compose.behind-nginx.yml up -d
 
 services:
   caddy:
@@ -40,7 +40,7 @@ services:
       PASSWORD: ${WEBDAV_PASSWORD:-${COUCHDB_OBSIDIAN_PASSWORD}}
     volumes:
       - ./data/vault:/var/lib/dav/data
-    # No ports exposed �?only reachable via caddy on the internal network.
+    # No ports exposed — only reachable via caddy on the internal network.
 
   qdrant:
     image: qdrant/qdrant:latest
@@ -51,7 +51,7 @@ services:
   embedder:
     build: ./apps/embedder
     restart: unless-stopped
-    user: "82:82"  # match WebDAV uid
+    user: "82:82"  # match WebDAV (alpine www-data) uid
     environment:
       EMBED_MODEL: ${EMBED_MODEL}
       QDRANT_URL: ${QDRANT_URL}
@@ -68,7 +68,7 @@ services:
   tidy:
     build: ./apps/tidy
     restart: unless-stopped
-    user: "82:82"  # match WebDAV (www-data) so files are always writable
+    user: "82:82"  # match WebDAV (alpine www-data) so files are always writable
     environment:
       VAULT_PATH: ${VAULT_PATH}
       INBOX_DIR: ${INBOX_DIR}
@@ -94,7 +94,7 @@ services:
   api:
     build: ./apps/api
     restart: unless-stopped
-    user: "82:82"  # match WebDAV (www-data) so files are always writable
+    user: "82:82"  # match WebDAV (alpine www-data) so files are always writable
     environment:
       DOMAIN: ${DOMAIN}
       JWT_SECRET: ${JWT_SECRET}
