@@ -9,6 +9,7 @@
 package tidy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -364,8 +365,8 @@ func (e *Engine) doCreate(target string, parsed *llmOutputV2, srcFM map[string]s
 	fm := map[string]any{
 		"title":    parsed.Title,
 		"category": parsed.Category,
-		"tags":     parsed.Tags,
-		"related":  parsed.Related,
+		"tags":     []string(parsed.Tags),
+		"related":  []string(parsed.Related),
 		"created":  defaultStr(srcFM["captured_at"], now),
 		"updated":  now,
 	}
@@ -455,15 +456,80 @@ func (e *Engine) loadPrompt(inline string) (string, error) {
 // === LLM I/O ==================================================================
 
 // llmOutputV2 mirrors the JSON the prompt asks the LLM to produce.
+//
+// Tags and Related use a permissive type so we can recover when the LLM
+// returns a single string, a nested array, or other malformed shapes
+// instead of the expected []string. Real LLMs do this often enough that
+// rejecting their output wholesale is not worth it.
 type llmOutputV2 struct {
-	Action      string      `json:"action"` // "append" | "create" | "create_topic"
-	TargetPath  string      `json:"target_path"`
-	Title       string      `json:"title"`
-	Category    string      `json:"category"`
-	Tags        []string    `json:"tags"`
-	Related     []string    `json:"related"`
-	Body        string      `json:"body"`
-	IndexUpdate IndexUpdate `json:"index_update"`
+	Action      string         `json:"action"` // "append" | "create" | "create_topic"
+	TargetPath  string         `json:"target_path"`
+	Title       string         `json:"title"`
+	Category    string         `json:"category"`
+	Tags        flexStringList `json:"tags"`
+	Related     flexStringList `json:"related"`
+	Body        string         `json:"body"`
+	IndexUpdate IndexUpdate    `json:"index_update"`
+}
+
+// flexStringList accepts:
+//   - []string             ← canonical
+//   - string               ← single tag/link, treated as one-element list
+//   - [][]string           ← nested, flattened
+//   - [string|null|other]  ← non-string elements are stringified or skipped
+type flexStringList []string
+
+func (f *flexStringList) UnmarshalJSON(data []byte) error {
+	data = bytes.TrimSpace(data)
+	if len(data) == 0 || string(data) == "null" {
+		*f = nil
+		return nil
+	}
+	// Single string.
+	if data[0] == '"' {
+		var s string
+		if err := json.Unmarshal(data, &s); err != nil {
+			return err
+		}
+		*f = []string{s}
+		return nil
+	}
+	// Array (possibly heterogeneous or nested).
+	if data[0] == '[' {
+		var raws []json.RawMessage
+		if err := json.Unmarshal(data, &raws); err != nil {
+			return err
+		}
+		out := make([]string, 0, len(raws))
+		for _, r := range raws {
+			r = bytes.TrimSpace(r)
+			if len(r) == 0 || string(r) == "null" {
+				continue
+			}
+			if r[0] == '"' {
+				var s string
+				if err := json.Unmarshal(r, &s); err == nil {
+					out = append(out, s)
+				}
+				continue
+			}
+			if r[0] == '[' {
+				// Nested array — recurse one level.
+				var nested flexStringList
+				if err := nested.UnmarshalJSON(r); err == nil {
+					out = append(out, nested...)
+				}
+				continue
+			}
+			// Number, bool, object — stringify.
+			out = append(out, string(r))
+		}
+		*f = out
+		return nil
+	}
+	// Anything else — drop it.
+	*f = nil
+	return nil
 }
 
 type IndexUpdate struct {
